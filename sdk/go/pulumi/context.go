@@ -413,14 +413,9 @@ func (ctx *Context) RegisterResource(
 	return nil
 }
 
-type resolver struct {
-	output   OutputType
-	elemType reflect.Type
-}
-
 // resourceState contains the results of a resource registration operation.
 type resourceState struct {
-	outputs map[string]resolver
+	outputs map[string]Output
 }
 
 // checks all possible sources of providers and merges them with preference given to the most specific
@@ -492,10 +487,10 @@ func makeResourceState(resourceV Resource) *resourceState {
 
 	resource, typ = resource.Elem(), typ.Elem()
 
-	state := &resourceState{outputs: map[string]resolver{}}
+	state := &resourceState{outputs: map[string]Output{}}
 	for i := 0; i < typ.NumField(); i++ {
 		fieldV := resource.Field(i)
-		if !fieldV.CanSet() || !outputType.ConvertibleTo(fieldV.Type()) {
+		if !fieldV.CanSet() || !fieldV.Type().Implements(outputType) {
 			continue
 		}
 
@@ -504,17 +499,9 @@ func makeResourceState(resourceV Resource) *resourceState {
 			continue
 		}
 
-		output := newOutput(resourceV)
-		typedOutput := reflect.ValueOf(output).Convert(fieldV.Type())
-
-		elemType := anyType
-		if typed, ok := typedOutput.Interface().(Output); ok {
-			elemType = typed.ElementType()
-		}
-
-		state.outputs[tag] = resolver{output, elemType}
-
-		fieldV.Set(typedOutput)
+		output := newOutput(fieldV.Type(), resourceV)
+		fieldV.Set(reflect.ValueOf(output))
+		state.outputs[tag] = output
 	}
 
 	state.providers = make(map[string]ProviderResource)
@@ -537,8 +524,8 @@ func (state *resourceState) resolve(dryrun bool, err error, inputs *resourceInpu
 	}
 	if err != nil {
 		// If there was an error, we must reject everything.
-		for _, resolver := range state.outputs {
-			resolver.output.reject(err)
+		for _, output := range state.outputs {
+			output.reject(err)
 		}
 		return
 	}
@@ -550,7 +537,7 @@ func (state *resourceState) resolve(dryrun bool, err error, inputs *resourceInpu
 		outprops["id"] = resource.MakeComputed(resource.PropertyValue{})
 	}
 
-	for k, resolver := range state.outputs {
+	for k, output := range state.outputs {
 		// If this is an unknown or missing value during a dry run, do nothing.
 		v, ok := outprops[resource.PropertyKey(k)]
 		if !ok && !dryrun {
@@ -563,11 +550,11 @@ func (state *resourceState) resolve(dryrun bool, err error, inputs *resourceInpu
 		}
 
 		// Allocate storage for the unmarshalled output.
-		dest := reflect.New(resolver.elemType).Elem()
+		dest := reflect.New(output.ElementType()).Elem()
 		if err = unmarshalOutput(v, dest); err != nil {
-			resolver.output.reject(err)
+			output.reject(err)
 		} else {
-			resolver.output.resolve(dest.Interface(), known)
+			output.resolve(dest.Interface(), known)
 		}
 	}
 }
@@ -709,7 +696,7 @@ func (ctx *Context) getOpts(t string, providers map[string]ProviderResource, opt
 	var importID ID
 	if importIDInput != nil {
 		if output, ok := importIDInput.(IDOutput); ok {
-			id, _, err := output.await(context.TODO())
+			id, _, err := output.awaitID(context.TODO())
 			if err != nil {
 				return "", nil, false, "", false, "", err
 			}
@@ -726,7 +713,7 @@ func (ctx *Context) getOpts(t string, providers map[string]ProviderResource, opt
 	if parent == nil {
 		parentURN = ctx.stackR
 	} else {
-		urn, _, err := parent.GetURN().await(context.TODO())
+		urn, _, err := parent.GetURN().awaitURN(context.TODO())
 		if err != nil {
 			return "", nil, false, "", false, "", nil, err
 		}
@@ -737,7 +724,7 @@ func (ctx *Context) getOpts(t string, providers map[string]ProviderResource, opt
 	if deps != nil {
 		depURNs = make([]URN, len(deps))
 		for i, r := range deps {
-			urn, _, err := r.GetURN().await(context.TODO())
+			urn, _, err := r.GetURN().awaitURN(context.TODO())
 			if err != nil {
 				return "", nil, false, "", false, "", nil, err
 			}
@@ -763,11 +750,11 @@ func (ctx *Context) getOpts(t string, providers map[string]ProviderResource, opt
 }
 
 func (ctx *Context) resolveProviderReference(provider ProviderResource) (string, error) {
-	urn, _, err := provider.GetURN().await(context.TODO())
+	urn, _, err := provider.GetURN().awaitURN(context.TODO())
 	if err != nil {
 		return "", err
 	}
-	id, known, err := provider.GetID().await(context.TODO())
+	id, known, err := provider.GetID().awaitID(context.TODO())
 	if err != nil {
 		return "", err
 	}
