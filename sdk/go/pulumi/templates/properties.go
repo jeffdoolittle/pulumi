@@ -359,6 +359,143 @@ func AllWithContext(ctx context.Context, outputs ...Output) AnyArrayOutput {
 	return AnyArrayOutput{result}
 }
 
+func awaitInputs(input reflect.Value, resolved reflect.Value) error {
+	// First figure out how to await the value.
+	if input.Implements(outputType) {
+
+
+		// If v is nil, just return that.
+		if v == nil {
+			return resource.PropertyValue{}, nil, nil
+		}
+
+		// If this is an Output, recurse.
+		if out, ok := v.(Output); ok {
+			if !await {
+				return resource.PropertyValue{}, nil, errors.Errorf(cannotAwaitFmt, v)
+			}
+			return marshalInputOutput(out)
+		}
+
+		// Next, look for some well known types.
+		switch v := v.(type) {
+		case *asset:
+			return resource.NewAssetProperty(&resource.Asset{
+				Path: v.Path(),
+				Text: v.Text(),
+				URI:  v.URI(),
+			}), nil, nil
+		case *archive:
+			var assets map[string]interface{}
+			if as := v.Assets(); as != nil {
+				assets = make(map[string]interface{})
+				for k, a := range as {
+					aa, _, err := marshalInput(a, await)
+					if err != nil {
+						return resource.PropertyValue{}, nil, err
+					}
+					assets[k] = aa.V
+				}
+			}
+			return resource.NewArchiveProperty(&resource.Archive{
+				Assets: assets,
+				Path:   v.Path(),
+				URI:    v.URI(),
+			}), nil, nil
+		case anyInput:
+			return marshalInput(v.v, await)
+		case CustomResource:
+			// Resources aren't serializable; instead, serialize a reference to ID, tracking as a dependency.
+			e, d, err := marshalInput(v.GetID(), await)
+			if err != nil {
+				return resource.PropertyValue{}, nil, err
+			}
+			return e, append([]Resource{v}, d...), nil
+		}
+
+		rv := reflect.ValueOf(v)
+		switch rv.Type().Kind() {
+		case reflect.Bool:
+			return resource.NewBoolProperty(rv.Bool()), nil, nil
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			return resource.NewNumberProperty(float64(rv.Int())), nil, nil
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			return resource.NewNumberProperty(float64(rv.Uint())), nil, nil
+		case reflect.Float32, reflect.Float64:
+			return resource.NewNumberProperty(rv.Float()), nil, nil
+		case reflect.Ptr, reflect.Interface:
+			// Dereference non-nil pointers and interfaces.
+			if rv.IsNil() {
+				return resource.PropertyValue{}, nil, nil
+			}
+			rv = rv.Elem()
+		case reflect.String:
+			return resource.NewStringProperty(rv.String()), nil, nil
+		case reflect.Array, reflect.Slice:
+			// If an array or a slice, create a new array by recursing into elements.
+			var arr []resource.PropertyValue
+			var deps []Resource
+			for i := 0; i < rv.Len(); i++ {
+				elem := rv.Index(i)
+				e, d, err := marshalInput(elem.Interface(), await)
+				if err != nil {
+					return resource.PropertyValue{}, nil, err
+				}
+				arr = append(arr, e)
+				deps = append(deps, d...)
+			}
+			return resource.NewArrayProperty(arr), deps, nil
+		case reflect.Map:
+			if rv.Type().Key().Kind() != reflect.String {
+				return resource.PropertyValue{}, nil,
+					errors.Errorf("expected map keys to be strings; got %v", rv.Type().Key())
+			}
+
+			// For maps, only support string-based keys, and recurse into the values.
+			obj := resource.PropertyMap{}
+			var deps []Resource
+			for _, key := range rv.MapKeys() {
+				value := rv.MapIndex(key)
+				mv, d, err := marshalInput(value.Interface(), await)
+				if err != nil {
+					return resource.PropertyValue{}, nil, err
+				}
+
+				obj[resource.PropertyKey(key.String())] = mv
+				deps = append(deps, d...)
+			}
+			return resource.NewObjectProperty(obj), deps, nil
+		case reflect.Struct:
+			obj := resource.PropertyMap{}
+			typ := rv.Type()
+			var deps []Resource
+			for i := 0; i < typ.NumField(); i++ {
+				tag := typ.Field(i).Tag.Get("pulumi")
+				if tag == "" {
+					continue
+				}
+
+				fv, d, err := marshalInput(rv.Field(i).Interface(), await)
+				if err != nil {
+					return resource.PropertyValue{}, nil, err
+				}
+
+				obj[resource.PropertyKey(tag)] = fv
+				deps = append(deps, d...)
+			}
+			return resource.NewObjectProperty(obj), deps, nil
+		default:
+			return resource.PropertyValue{}, nil, errors.Errorf("unrecognized input property type: %v (%T)", v, v)
+		}
+		v = rv.Interface()
+	}
+
+
+	switch input.Kind() {
+	case reflect.
+	}
+}
+
 // MakeOutput returns an Output that will resolve when all Outputs contained in the given Input have resolved.
 func MakeOutput(input pulumi.Input) Output {
 	elementType := input.ElementType()
@@ -370,7 +507,7 @@ func MakeOutput(input pulumi.Input) Output {
 
 	result := newOutput(resultType, o.dependencies()...)
 	go func() {
-
+		element := reflect.New(elementType).Elem()
 	}
 	return result
 }
