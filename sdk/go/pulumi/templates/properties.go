@@ -359,145 +359,164 @@ func AllWithContext(ctx context.Context, outputs ...Output) AnyArrayOutput {
 	return AnyArrayOutput{result}
 }
 
-func awaitInputs(input reflect.Value, resolved reflect.Value) error {
-	// First figure out how to await the value.
-	if input.Implements(outputType) {
+func awaitStructFields(ctx context.Context, input reflect.Value, resolved reflect.Value) (bool, error) {
+	inputType, resolvedType := input.Type(), resolved.Type()
+	
+	contract.Assert(inputType.Kind() == reflect.Struct)
+	contract.Assert(resolvedType.Kind() == reflect.Struct)
 
-
-		// If v is nil, just return that.
-		if v == nil {
-			return resource.PropertyValue{}, nil, nil
-		}
-
-		// If this is an Output, recurse.
-		if out, ok := v.(Output); ok {
-			if !await {
-				return resource.PropertyValue{}, nil, errors.Errorf(cannotAwaitFmt, v)
-			}
-			return marshalInputOutput(out)
-		}
-
-		// Next, look for some well known types.
-		switch v := v.(type) {
-		case *asset:
-			return resource.NewAssetProperty(&resource.Asset{
-				Path: v.Path(),
-				Text: v.Text(),
-				URI:  v.URI(),
-			}), nil, nil
-		case *archive:
-			var assets map[string]interface{}
-			if as := v.Assets(); as != nil {
-				assets = make(map[string]interface{})
-				for k, a := range as {
-					aa, _, err := marshalInput(a, await)
-					if err != nil {
-						return resource.PropertyValue{}, nil, err
-					}
-					assets[k] = aa.V
-				}
-			}
-			return resource.NewArchiveProperty(&resource.Archive{
-				Assets: assets,
-				Path:   v.Path(),
-				URI:    v.URI(),
-			}), nil, nil
-		case anyInput:
-			return marshalInput(v.v, await)
-		case CustomResource:
-			// Resources aren't serializable; instead, serialize a reference to ID, tracking as a dependency.
-			e, d, err := marshalInput(v.GetID(), await)
-			if err != nil {
-				return resource.PropertyValue{}, nil, err
-			}
-			return e, append([]Resource{v}, d...), nil
-		}
-
-		rv := reflect.ValueOf(v)
-		switch rv.Type().Kind() {
-		case reflect.Bool:
-			return resource.NewBoolProperty(rv.Bool()), nil, nil
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			return resource.NewNumberProperty(float64(rv.Int())), nil, nil
-		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			return resource.NewNumberProperty(float64(rv.Uint())), nil, nil
-		case reflect.Float32, reflect.Float64:
-			return resource.NewNumberProperty(rv.Float()), nil, nil
-		case reflect.Ptr, reflect.Interface:
-			// Dereference non-nil pointers and interfaces.
-			if rv.IsNil() {
-				return resource.PropertyValue{}, nil, nil
-			}
-			rv = rv.Elem()
-		case reflect.String:
-			return resource.NewStringProperty(rv.String()), nil, nil
-		case reflect.Array, reflect.Slice:
-			// If an array or a slice, create a new array by recursing into elements.
-			var arr []resource.PropertyValue
-			var deps []Resource
-			for i := 0; i < rv.Len(); i++ {
-				elem := rv.Index(i)
-				e, d, err := marshalInput(elem.Interface(), await)
-				if err != nil {
-					return resource.PropertyValue{}, nil, err
-				}
-				arr = append(arr, e)
-				deps = append(deps, d...)
-			}
-			return resource.NewArrayProperty(arr), deps, nil
-		case reflect.Map:
-			if rv.Type().Key().Kind() != reflect.String {
-				return resource.PropertyValue{}, nil,
-					errors.Errorf("expected map keys to be strings; got %v", rv.Type().Key())
-			}
-
-			// For maps, only support string-based keys, and recurse into the values.
-			obj := resource.PropertyMap{}
-			var deps []Resource
-			for _, key := range rv.MapKeys() {
-				value := rv.MapIndex(key)
-				mv, d, err := marshalInput(value.Interface(), await)
-				if err != nil {
-					return resource.PropertyValue{}, nil, err
-				}
-
-				obj[resource.PropertyKey(key.String())] = mv
-				deps = append(deps, d...)
-			}
-			return resource.NewObjectProperty(obj), deps, nil
-		case reflect.Struct:
-			obj := resource.PropertyMap{}
-			typ := rv.Type()
-			var deps []Resource
-			for i := 0; i < typ.NumField(); i++ {
-				tag := typ.Field(i).Tag.Get("pulumi")
-				if tag == "" {
-					continue
-				}
-
-				fv, d, err := marshalInput(rv.Field(i).Interface(), await)
-				if err != nil {
-					return resource.PropertyValue{}, nil, err
-				}
-
-				obj[resource.PropertyKey(tag)] = fv
-				deps = append(deps, d...)
-			}
-			return resource.NewObjectProperty(obj), deps, nil
-		default:
-			return resource.PropertyValue{}, nil, errors.Errorf("unrecognized input property type: %v (%T)", v, v)
-		}
-		v = rv.Interface()
+	// We need to map the fields of the input struct to those of the output struct. We'll build a mapping from name to
+	// to field index for the resolved type up front.
+	nameToIndex := map[string]int{}
+	numFields := resolvedType.NumField()
+	for i := 0; i < numFields; i++ {
+		nameToIndex[resolvedType.Field(i).Name] = i
 	}
 
+	// Now, resolve each field in the input.
+	numFields = inputType.NumField()
+	for i := 0; i < numFields; i++ {
+		fieldName := inputType.Field(i).Name
+		j, ok := nameToIndex[fieldName]
+		if !ok {
+			err := errors.Errorf("unknown field %v when resolving %v to %v", fieldName, inputType, resolvedType)
+			return true, err
+		}
 
-	switch input.Kind() {
-	case reflect.
+		// Delete the mapping to indicate that we've resolved the field.
+		delete(nameToIndex, fieldName)
+
+		known, err := awaitInputs(ctx, input.Field(i), resolved.Field(j))
+		if err != nil || !known {
+			return known, err
+		}
 	}
+
+	// Check for unassigned fields.
+	if len(nameToIndex) != 0 {
+		missing := make([]string, 0, len(nameToIndex))
+		for name := range nameToIndex {
+			missing = append(missing, name)
+		}
+		err := errors.Errorf("missing fields %s when resolving %v to %v", strings.Join(missing, ", "), inputType,
+			resolvedType)
+		return true, err
+	}
+
+	return true, nil
 }
+
+func awaitInputs(ctx context.Context, input reflect.Value, resolved reflect.Value) (bool, error) {
+	for {
+		contract.Assert(resolved.CanSet())
+		contract.Assert(input.IsValid())
+		contract.Assert(input.CanInterface())
+
+		// First, check for an Output that must be awaited.
+		if input.Type().Implements(outputType) {
+			output := input.Interface().(Output)
+
+			value, known, err := output.await(ctx)
+			if err != nil || !known {
+				return known, err
+			}
+			input = reflect.ValueOf(value)
+		}
+
+		// Next, look for the well-known anyInput type.
+		if any, ok := v.(anyInput); ok {
+			input = reflect.ValueOf(any.v)
+		}
+
+		// If the dest type is an interface, we may not be able to assign to it.
+		inputType, resolvedType := input.Type(), resolved.Type()
+		if resolvedType.Kind() == reflect.Interface {
+			if !inputType.AssignableTo(resolvedType) {
+				return false, errprs.Errorf("cannot resolve a %v to a %v", inputType, resolvedType)
+			}
+			resolvedElem := reflect.ValueOf(
+		}
+
+		// Now, examine the type and continue accordingly.
+		if inputType.Kind() != resolvedType.Kind() {
+			return false, errors.Errorf("cannot resolve a %v to a %v", inputType, resolvedType)
+		}
+
+		switch inputType.Kind() {
+		case reflect.Ptr:
+			if input.IsNil() {
+				resolved.Set(reflect.Zero(resolvedType))
+				return true, nil
+			}
+			resolvedElem := reflect.New(resolvedType.Elem())
+			resolved.Set(resolvedElem)
+			input, resolved = input.Elem(), resolvedElem
+			continue
+		case reflect.Struct:
+			return awaitStructFields(ctx, input, resolved)
+		case reflect.Array:
+			l := input.Len()
+			for i := 0; i < l; i++ {
+				eknown, err := awaitInputs(ctx, input.Index(i), resolved.Index(i))
+				if err != nil || !eknown {
+					return eknown, err
+				}
+			}
+			return true, nil
+		case reflect.Slice:
+			l := input.Len()
+			slice := reflect.MakeSlice(resolvedType, l, l)
+			for i := 0; i < l; i++ {
+				eknown, err := awaitInputs(ctx, input.Index(i), slice.Index(i))
+				if err != nil || !eknown {
+					return eknown, err
+				}
+			}
+			resolved.Set(slice)
+			return true, nil
+		case reflect.Map:
+			result := reflect.MakeMap(resolvedType)
+			resolvedKeyType, resolvedValueType := resolvedType.Key(), resolvedType.Value()
+
+			iter := input.MapRange()
+			for iter.Next() {
+				kv := reflect.New(resolvedKeyType).Elem()
+				known, err := awaitInputs(iter.Key(), kv)
+				if err != nil || !known {
+					return known, err
+				}
+
+				vv := reflect.New(resolvedValueType).Elem()
+				known, err = awaitInputs(iter.Value(), vv)
+				if err != nil || !known {
+					return known, err
+				}
+
+				reflect.SetMapIndex(kv, vv)
+			}
+
+			dest.Set(result)
+			return true, nil
+		default:
+			if !inputType.AssignableTo(resolvedType) {
+				if !inputType.ConvertibleTo(resolvedType) {
+					return true, errors.Errorf("cannot assign value of type %v to %v", inputType, resolvedType)
+				}
+				input = input.Convert(resolvedType)
+			}
+			resolved.Set(input)
+			return true, nil
+		}
+}
+
 
 // MakeOutput returns an Output that will resolve when all Outputs contained in the given Input have resolved.
 func MakeOutput(input pulumi.Input) Output {
+}
+
+// MakeOutputWithContext returns an Output that will resolve when all Outputs contained in the given Input have
+// resolved.
+func MakeOutputWithContext(ctx context.Context, input pulumi.Input) Output {
 	elementType := input.ElementType()
 
 	resultType := anyOutputType
@@ -508,6 +527,24 @@ func MakeOutput(input pulumi.Input) Output {
 	result := newOutput(resultType, o.dependencies()...)
 	go func() {
 		element := reflect.New(elementType).Elem()
+
+		known, err := awaitInputs(ctx, 
+		if err != nil || !known {
+			result.fulfill(nil, known, err)
+			return
+		}
+
+		// If we have a known value, run the applier to transform it.
+		results := fn.Call([]reflect.Value{reflect.ValueOf(ctx), reflect.ValueOf(v)})
+		if len(results) == 2 && !results[1].IsNil() {
+			result.reject(results[1].Interface().(error))
+			return
+		}
+
+		// Fulfill the result.
+		result.fulfill(results[0].Interface(), true, nil)
+
+		known, err := awaitInputs(
 	}
 	return result
 }
