@@ -359,6 +359,22 @@ func AllWithContext(ctx context.Context, outputs ...Output) AnyArrayOutput {
 	return AnyArrayOutput{result}
 }
 
+// MakeOutput returns an Output that will resolve when all Outputs contained in the given Input have resolved.
+func MakeOutput(input pulumi.Input) Output {
+	elementType := input.ElementType()
+
+	resultType := anyOutputType
+	if ot, ok := concreteTypeToOutputType.Load(elementType); ok {
+		resultType = ot.(reflect.Type)
+	}
+
+	result := newOutput(resultType, o.dependencies()...)
+	go func() {
+
+	}
+	return result
+}
+
 // Input is the type of a generic input value for a Pulumi resource. This type is used in conjunction with Output
 // to provide polymorphism over strongly-typed input values.
 //
