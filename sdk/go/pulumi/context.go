@@ -670,7 +670,6 @@ func (ctx *Context) getOpts(t string, providers map[string]ProviderResource, opt
 	var provider ProviderResource
 	var deleteBeforeReplace bool
 	var importIDInput IDInput
-	var importID ID
 	var ignoreChanges []string
 	for _, opt := range opts {
 		if parent == nil && opt.Parent != nil {
@@ -691,6 +690,9 @@ func (ctx *Context) getOpts(t string, providers map[string]ProviderResource, opt
 		if importIDInput == nil && opt.Import != nil {
 			importIDInput = opt.Import
 		}
+		if ignoreChanges == nil && opt.IgnoreChanges != nil {
+			ignoreChanges = opt.IgnoreChanges
+		}
 	}
 
 	var importID ID
@@ -698,14 +700,11 @@ func (ctx *Context) getOpts(t string, providers map[string]ProviderResource, opt
 		if output, ok := importIDInput.(IDOutput); ok {
 			id, _, err := output.awaitID(context.TODO())
 			if err != nil {
-				return "", nil, false, "", false, "", err
+				return "", nil, false, "", false, "", nil, err
 			}
 			importID = id
 		} else {
 			importID = importIDInput.(ID)
-		}
-		if ignoreChanges == nil && opt.IgnoreChanges != nil {
-			ignoreChanges = opt.IgnoreChanges
 		}
 	}
 
