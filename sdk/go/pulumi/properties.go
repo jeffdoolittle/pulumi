@@ -1772,7 +1772,7 @@ func (Float64MapOutput) ElementType() reflect.Type {
 
 func (Float64MapOutput) isFloat64Map() {}
 
-var iDType = reflect.TypeOf((*ID)(nil)).Elem()
+var idType = reflect.TypeOf((*ID)(nil)).Elem()
 
 // IDInput is an input type that accepts ID and IDOutput values.
 type IDInput interface {
@@ -1784,7 +1784,7 @@ type IDInput interface {
 
 // ElementType returns the element type of this Input (ID).
 func (ID) ElementType() reflect.Type {
-	return iDType
+	return idType
 }
 
 func (ID) isID() {}
@@ -1796,7 +1796,7 @@ type IDOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output (ID).
 func (IDOutput) ElementType() reflect.Type {
-	return iDType
+	return idType
 }
 
 func (IDOutput) isID() {}
@@ -2463,7 +2463,7 @@ func (StringMapOutput) ElementType() reflect.Type {
 
 func (StringMapOutput) isStringMap() {}
 
-var uRNType = reflect.TypeOf((*URN)(nil)).Elem()
+var urnType = reflect.TypeOf((*URN)(nil)).Elem()
 
 // URNInput is an input type that accepts URN and URNOutput values.
 type URNInput interface {
@@ -2475,7 +2475,7 @@ type URNInput interface {
 
 // ElementType returns the element type of this Input (URN).
 func (URN) ElementType() reflect.Type {
-	return uRNType
+	return urnType
 }
 
 func (URN) isURN() {}
@@ -2487,7 +2487,7 @@ type URNOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output (URN).
 func (URNOutput) ElementType() reflect.Type {
-	return uRNType
+	return urnType
 }
 
 func (URNOutput) isURN() {}

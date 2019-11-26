@@ -22,6 +22,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strings"
 	"text/template"
 	"unicode"
 )
@@ -83,6 +84,18 @@ var builtins = makeBuiltins([]builtin{
 var funcs = template.FuncMap{
 	"Unexported": func(s string) string {
 		runes := []rune(s)
+
+		allCaps := true
+		for _, r := range runes {
+			if !unicode.IsUpper(r) {
+				allCaps = false
+				break
+			}
+		}
+
+		if allCaps {
+			return strings.ToLower(s)
+		}
 		return string(append([]rune{unicode.ToLower(runes[0])}, runes[1:]...))
 	},
 }

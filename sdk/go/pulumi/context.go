@@ -30,6 +30,7 @@ import (
 
 	"github.com/pulumi/pulumi/pkg/resource"
 	"github.com/pulumi/pulumi/pkg/resource/plugin"
+	"github.com/pulumi/pulumi/pkg/util/contract"
 	"github.com/pulumi/pulumi/pkg/util/logging"
 	pulumirpc "github.com/pulumi/pulumi/sdk/proto/go"
 )
@@ -225,24 +226,23 @@ func (ctx *Context) Invoke(tok string, args interface{}, result interface{}, opt
 //
 // The value passed to resource must be a pointer to a struct. The fields of this struct that correspond to output
 // properties of the resource must have types that are assignable from Output, and must have a `pulumi` tag that
-// records the name of the corresponding output property. The struct must have a field for the "urn" and "id"
-// properties.
+// records the name of the corresponding output property. The struct must embed the CustomResourceState type.
 //
 // For example, given a custom resource with an int-typed output "foo" and a string-typed output "bar", one would
 // define the following CustomResource type:
 //
 //     type MyResource struct {
-//         URN pulumi.URNOutput    `pulumi:"urn"`
-//         ID  pulumi.IDOutput     `pulumi:"id"`
+//         pulumi.CustomResourceState
+//
 //         Foo pulumi.IntOutput    `pulumi:"foo"`
 //         Bar pulumi.StringOutput `pulumi:"bar"`
 //     }
 //
-//     func (r *MyResource) GetURN() pulumi.URNOutput {
+//     func (r *MyResource) URN() pulumi.URNOutput {
 //         return r.URN
 //     }
 //
-//     func (r *MyResource) GetID() pulumi.IDOutput {
+//     func (r *MyResource) ID() pulumi.IDOutput {
 //         return r.ID
 //     }
 //
@@ -267,9 +267,7 @@ func (ctx *Context) ReadResource(
 	}
 
 	// Create resolvers for the resource's outputs.
-	res := makeResourceState(resource)
-
-	res.providers = mergeProviders(t, opts...)
+	res := makeResourceState(resource, mergeProviders(t, opts...))
 
 	// Kick off the resource read operation.  This will happen asynchronously and resolve the above properties.
 	go func() {
@@ -318,24 +316,24 @@ func (ctx *Context) ReadResource(
 //
 // The value passed to resource must be a pointer to a struct. The fields of this struct that correspond to output
 // properties of the resource must have types that are assignable from Output, and must have a `pulumi` tag that
-// records the name of the corresponding output property. The struct must have a field for the "urn" property. If the
-// struct implements CustomResource, it must have a field for the "id" property.
+// records the name of the corresponding output property. The struct must embed either the ResourceState or the
+// CustomResourceState type.
 //
 // For example, given a custom resource with an int-typed output "foo" and a string-typed output "bar", one would
 // define the following CustomResource type:
 //
 //     type MyResource struct {
-//         URN pulumi.URNOutput    `pulumi:"urn"`
-//         ID  pulumi.IDOutput     `pulumi:"id"`
+//         pulumi.CustomResourceState
+//
 //         Foo pulumi.IntOutput    `pulumi:"foo"`
 //         Bar pulumi.StringOutput `pulumi:"bar"`
 //     }
 //
-//     func (r *MyResource) GetURN() pulumi.URNOutput {
+//     func (r *MyResource) URN() pulumi.URNOutput {
 //         return r.URN
 //     }
 //
-//     func (r *MyResource) GetID() pulumi.IDOutput {
+//     func (r *MyResource) ID() pulumi.IDOutput {
 //         return r.ID
 //     }
 //
@@ -360,9 +358,7 @@ func (ctx *Context) RegisterResource(
 	}
 
 	// Create resolvers for the resource's outputs.
-	res := makeResourceState(resource)
-
-	res.providers = mergeProviders(t, opts...)
+	res := makeResourceState(resource, mergeProviders(t, opts...))
 
 	// Kick off the resource registration.  If we are actually performing a deployment, the resulting properties
 	// will be resolved asynchronously as the RPC operation completes.  If we're just planning, values won't resolve.
@@ -415,7 +411,8 @@ func (ctx *Context) RegisterResource(
 
 // resourceState contains the results of a resource registration operation.
 type resourceState struct {
-	outputs map[string]Output
+	outputs   map[string]Output
+	providers map[string]ProviderResource
 }
 
 // checks all possible sources of providers and merges them with preference given to the most specific
@@ -460,12 +457,6 @@ func mergeProviders(t string, opts ...ResourceOpt) map[string]ProviderResource {
 	return providers
 }
 
-// GetProvider takes a URN and returns the associated provider
-func (state *ResourceState) GetProvider(t string) ProviderResource {
-	pkg := getPackage(t)
-	return state.providers[pkg]
-}
-
 // getPackage takes in a type and returns the pkg
 func getPackage(t string) string {
 	components := strings.Split(t, ":")
@@ -477,7 +468,7 @@ func getPackage(t string) string {
 
 // makeResourceState creates a set of resolvers that we'll use to finalize state, for URNs, IDs, and output
 // properties.
-func makeResourceState(resourceV Resource) *resourceState {
+func makeResourceState(resourceV Resource, providers map[string]ProviderResource) *resourceState {
 	resource := reflect.ValueOf(resourceV)
 
 	typ := resource.Type()
@@ -487,24 +478,44 @@ func makeResourceState(resourceV Resource) *resourceState {
 
 	resource, typ = resource.Elem(), typ.Elem()
 
+	var rs *ResourceState
+	var crs *CustomResourceState
+
 	state := &resourceState{outputs: map[string]Output{}}
 	for i := 0; i < typ.NumField(); i++ {
 		fieldV := resource.Field(i)
-		if !fieldV.CanSet() || !fieldV.Type().Implements(outputType) {
+		if !fieldV.CanSet() {
 			continue
 		}
 
-		tag := typ.Field(i).Tag.Get("pulumi")
-		if tag == "" {
-			continue
-		}
+		field := typ.Field(i)
+		switch {
+		case field.Anonymous && field.Type == resourceStateType:
+			rs = fieldV.Addr().Interface().(*ResourceState)
+		case field.Anonymous && field.Type == customResourceStateType:
+			crs = fieldV.Addr().Interface().(*CustomResourceState)
+		case field.Type.Implements(outputType):
+			tag := typ.Field(i).Tag.Get("pulumi")
+			if tag == "" {
+				continue
+			}
 
-		output := newOutput(fieldV.Type(), resourceV)
-		fieldV.Set(reflect.ValueOf(output))
-		state.outputs[tag] = output
+			output := newOutput(field.Type, resourceV)
+			fieldV.Set(reflect.ValueOf(output))
+			state.outputs[tag] = output
+		}
 	}
 
-	state.providers = make(map[string]ProviderResource)
+	if crs != nil {
+		rs = &crs.ResourceState
+		crs.id = IDOutput{newOutputState(idType, resourceV)}
+		state.outputs["id"] = crs.id
+	}
+
+	contract.Assert(rs != nil)
+	rs.providers = providers
+	rs.urn = URNOutput{newOutputState(urnType, resourceV)}
+	state.outputs["urn"] = rs.urn
 
 	return state
 }
@@ -712,7 +723,7 @@ func (ctx *Context) getOpts(t string, providers map[string]ProviderResource, opt
 	if parent == nil {
 		parentURN = ctx.stackR
 	} else {
-		urn, _, err := parent.GetURN().awaitURN(context.TODO())
+		urn, _, err := parent.URN().awaitURN(context.TODO())
 		if err != nil {
 			return "", nil, false, "", false, "", nil, err
 		}
@@ -723,7 +734,7 @@ func (ctx *Context) getOpts(t string, providers map[string]ProviderResource, opt
 	if deps != nil {
 		depURNs = make([]URN, len(deps))
 		for i, r := range deps {
-			urn, _, err := r.GetURN().awaitURN(context.TODO())
+			urn, _, err := r.URN().awaitURN(context.TODO())
 			if err != nil {
 				return "", nil, false, "", false, "", nil, err
 			}
@@ -749,11 +760,11 @@ func (ctx *Context) getOpts(t string, providers map[string]ProviderResource, opt
 }
 
 func (ctx *Context) resolveProviderReference(provider ProviderResource) (string, error) {
-	urn, _, err := provider.GetURN().awaitURN(context.TODO())
+	urn, _, err := provider.URN().awaitURN(context.TODO())
 	if err != nil {
 		return "", err
 	}
-	id, known, err := provider.GetID().awaitID(context.TODO())
+	id, known, err := provider.ID().awaitID(context.TODO())
 	if err != nil {
 		return "", err
 	}

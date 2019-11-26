@@ -42,7 +42,7 @@ func marshalInputs(props map[string]Input) (resource.PropertyMap, map[string][]U
 		var deps []URN
 		pdepset := map[URN]bool{}
 		for _, dep := range resourceDeps {
-			depURN, _, err := dep.GetURN().awaitURN(context.TODO())
+			depURN, _, err := dep.URN().awaitURN(context.TODO())
 			if err != nil {
 				return nil, nil, nil, err
 			}
@@ -110,7 +110,7 @@ func marshalInput(v interface{}, await bool) (resource.PropertyValue, []Resource
 			}), nil, nil
 		case CustomResource:
 			// Resources aren't serializable; instead, serialize a reference to ID, tracking as a dependency.
-			e, d, err := marshalInput(v.GetID(), await)
+			e, d, err := marshalInput(v.ID(), await)
 			if err != nil {
 				return resource.PropertyValue{}, nil, err
 			}

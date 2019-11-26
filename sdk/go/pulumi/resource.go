@@ -14,6 +14,8 @@
 
 package pulumi
 
+import "reflect"
+
 type (
 	// ID is a unique identifier assigned by a resource provider to a resource.
 	ID string
@@ -21,10 +23,45 @@ type (
 	URN string
 )
 
+var resourceStateType = reflect.TypeOf(ResourceState{})
+var customResourceStateType = reflect.TypeOf(CustomResourceState{})
+
+// ResourceState is the base
+type ResourceState struct {
+	urn URNOutput `pulumi:"urn"`
+
+	providers map[string]ProviderResource
+}
+
+func (s ResourceState) URN() URNOutput {
+	return s.urn
+}
+
+// GetProvider takes a URN and returns the associated provider.
+func (s ResourceState) GetProvider(t string) ProviderResource {
+	pkg := getPackage(t)
+	return s.providers[pkg]
+}
+
+func (ResourceState) isResource() {}
+
+type CustomResourceState struct {
+	ResourceState
+
+	id IDOutput `pulumi:"id"`
+}
+
+func (s CustomResourceState) ID() IDOutput {
+	return s.id
+}
+
 // Resource represents a cloud resource managed by Pulumi.
 type Resource interface {
 	// URN is this resource's stable logical URN used to distinctly address it before, during, and after deployments.
-	GetURN() URNOutput
+	URN() URNOutput
+
+	// isResource() is a marker method used to ensure that all Resource types embed a ResourceState.
+	isResource()
 }
 
 // CustomResource is a cloud resource whose create, read, update, and delete (CRUD) operations are managed by performing
@@ -34,7 +71,7 @@ type CustomResource interface {
 	Resource
 	// ID is the provider-assigned unique identifier for this managed resource.  It is set during deployments,
 	// but might be missing ("") during planning phases.
-	GetID() IDOutput
+	ID() IDOutput
 }
 
 // ComponentResource is a resource that aggregates one or more other child resources into a higher level abstraction.

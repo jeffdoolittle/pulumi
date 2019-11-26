@@ -138,8 +138,7 @@ func init() {
 }
 
 type testResource struct {
-	URN URNOutput `pulumi:"urn"`
-	ID  IDOutput  `pulumi:"id"`
+	CustomResourceState
 
 	Any     AnyOutput     `pulumi:"any"`
 	Archive ArchiveOutput `pulumi:"archive"`
@@ -164,17 +163,9 @@ type testResource struct {
 	Nested nestedTypeOutput `pulumi:"nested"`
 }
 
-func (r *testResource) GetURN() URNOutput {
-	return r.URN
-}
-
-func (r *testResource) GetID() IDOutput {
-	return r.ID
-}
-
 func TestResourceState(t *testing.T) {
 	var theResource testResource
-	state := makeResourceState(&theResource)
+	state := makeResourceState(&theResource, nil)
 
 	resolved, _, _, _ := marshalInputs(map[string]Input{
 		"any":     String("foo"),
@@ -209,8 +200,8 @@ func TestResourceState(t *testing.T) {
 	state.resolve(false, nil, nil, "foo", "bar", s)
 
 	input := map[string]Input{
-		"urn":     theResource.URN,
-		"id":      theResource.ID,
+		"urn":     theResource.URN(),
+		"id":      theResource.ID(),
 		"any":     theResource.Any,
 		"archive": theResource.Archive,
 		"array":   theResource.Array,
