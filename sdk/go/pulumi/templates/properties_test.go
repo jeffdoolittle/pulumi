@@ -64,7 +64,7 @@ func TestBasicOutputs(t *testing.T) {
 }
 
 func TestArrayOutputs(t *testing.T) {
-	out := AnyArrayOutput{newOutputState(reflect.TypeOf([]interface{}{}))}
+	out := ArrayOutput{newOutputState(reflect.TypeOf([]interface{}{}))}
 	go func() {
 		out.resolve([]interface{}{nil, 0, "x"}, true)
 	}()
@@ -95,7 +95,7 @@ func TestBoolOutputs(t *testing.T) {
 }
 
 func TestMapOutputs(t *testing.T) {
-	out := AnyMapOutput{newOutputState(reflect.TypeOf(map[string]interface{}{}))}
+	out := MapOutput{newOutputState(reflect.TypeOf(map[string]interface{}{}))}
 	go func() {
 		out.resolve(map[string]interface{}{
 			"x": 1,
@@ -374,4 +374,57 @@ func TestOutputApply(t *testing.T) {
 		assert.True(t, known)
 		assert.Equal(t, &myStructType{foo: 42, bar: "hello"}, v)
 	}
+}
+
+// Test that ToOutput works with all builtin input types
+func TestToOutputBuiltins(t *testing.T) {
+{{range .Builtins}}
+	{
+		out := ToOutput({{.Example}})
+		_, ok := out.({{.Name}}Input)
+		assert.True(t, ok)
+
+		_, known, err := await(out)
+		assert.True(t, known)
+		assert.NoError(t, err)
+
+		out = ToOutput(out)
+		_, ok = out.({{.Name}}Input)
+		assert.True(t, ok)
+
+		_, known, err = await(out)
+		assert.True(t, known)
+		assert.NoError(t, err)
+	}
+{{end}}
+}
+
+// Test that ToOutput works with a struct type.
+func TestToOutputStruct(t *testing.T) {
+	out := ToOutput(nestedTypeArgs{Foo: String("bar"), Bar: Int(42)})
+	_, ok := out.(nestedTypeInput)
+	assert.True(t, ok)
+
+	v, known, err := await(out)
+	assert.True(t, known)
+	assert.NoError(t, err)
+	assert.Equal(t, nestedType{Foo: "bar", Bar: 42}, v)
+
+	out = ToOutput(out)
+	_, ok = out.(nestedTypeInput)
+	assert.True(t, ok)
+
+	v, known, err = await(out)
+	assert.True(t, known)
+	assert.NoError(t, err)
+	assert.Equal(t, nestedType{Foo: "bar", Bar: 42}, v)
+
+	out = ToOutput(nestedTypeArgs{Foo: ToOutput(String("bar")).(StringInput), Bar: ToOutput(Int(42)).(IntInput)})
+	_, ok = out.(nestedTypeInput)
+	assert.True(t, ok)
+
+	v, known, err = await(out)
+	assert.True(t, known)
+	assert.NoError(t, err)
+	assert.Equal(t, nestedType{Foo: "bar", Bar: 42}, v)
 }

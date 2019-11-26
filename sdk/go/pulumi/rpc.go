@@ -108,8 +108,6 @@ func marshalInput(v interface{}, await bool) (resource.PropertyValue, []Resource
 				Path:   v.Path(),
 				URI:    v.URI(),
 			}), nil, nil
-		case anyInput:
-			return marshalInput(v.v, await)
 		case CustomResource:
 			// Resources aren't serializable; instead, serialize a reference to ID, tracking as a dependency.
 			e, d, err := marshalInput(v.GetID(), await)
@@ -299,7 +297,7 @@ func unmarshalOutput(v resource.PropertyValue, dest reflect.Value) error {
 	// In the case of assets and archives, turn these into real asset and archive structures.
 	switch {
 	case v.IsAsset():
-		if !assetType.AssignableTo(dest.Type()) {
+		if !assetType.Elem().AssignableTo(dest.Type()) {
 			return errors.Errorf("expected a %s, got an asset", dest.Type())
 		}
 
@@ -307,10 +305,10 @@ func unmarshalOutput(v resource.PropertyValue, dest reflect.Value) error {
 		if err != nil {
 			return err
 		}
-		dest.Set(reflect.ValueOf(asset))
+		dest.Set(reflect.ValueOf(asset).Elem())
 		return nil
 	case v.IsArchive():
-		if !archiveType.AssignableTo(dest.Type()) {
+		if !archiveType.Elem().AssignableTo(dest.Type()) {
 			return errors.Errorf("expected a %s, got an archive", dest.Type())
 		}
 
@@ -318,7 +316,7 @@ func unmarshalOutput(v resource.PropertyValue, dest reflect.Value) error {
 		if err != nil {
 			return err
 		}
-		dest.Set(reflect.ValueOf(archive))
+		dest.Set(reflect.ValueOf(archive).Elem())
 		return nil
 	case v.IsSecret():
 		return errors.New("this version of the Pulumi SDK does not support first-class secrets")

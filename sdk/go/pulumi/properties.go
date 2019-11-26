@@ -18,6 +18,7 @@ package pulumi
 import (
 	"context"
 	"reflect"
+	"strings"
 	"sync"
 
 	"github.com/pkg/errors"
@@ -192,7 +193,7 @@ func newOutput(typ reflect.Type, deps ...Resource) Output {
 // NewOutput returns an output value that can be used to rendezvous with the production of a value or error.  The
 // function returns the output itself, plus two functions: one for resolving a value, and another for rejecting with an
 // error; exactly one function must be called. This acts like a promise.
-func NewOutput() (AnyOutput, func(interface{}), func(error)) {
+func NewOutput() (Output, func(interface{}), func(error)) {
 	out := newOutputState(anyType)
 
 	resolve := func(v interface{}) {
@@ -312,36 +313,6 @@ func (o *OutputState) ApplyWithContext(ctx context.Context, applier interface{})
 		result.fulfill(results[0].Interface(), true, nil)
 	}()
 	return result
-}
-
-// ApplyAny is like Apply, but returns a AnyOutput.
-func (o *OutputState) ApplyAny(applier interface{}) AnyOutput {
-	return o.Apply(applier).(AnyOutput)
-}
-
-// ApplyAnyWithContext is like ApplyWithContext, but returns a AnyOutput.
-func (o *OutputState) ApplyAnyWithContext(ctx context.Context, applier interface{}) AnyOutput {
-	return o.ApplyWithContext(ctx, applier).(AnyOutput)
-}
-
-// ApplyAnyArray is like Apply, but returns a AnyArrayOutput.
-func (o *OutputState) ApplyAnyArray(applier interface{}) AnyArrayOutput {
-	return o.Apply(applier).(AnyArrayOutput)
-}
-
-// ApplyAnyArrayWithContext is like ApplyWithContext, but returns a AnyArrayOutput.
-func (o *OutputState) ApplyAnyArrayWithContext(ctx context.Context, applier interface{}) AnyArrayOutput {
-	return o.ApplyWithContext(ctx, applier).(AnyArrayOutput)
-}
-
-// ApplyAnyMap is like Apply, but returns a AnyMapOutput.
-func (o *OutputState) ApplyAnyMap(applier interface{}) AnyMapOutput {
-	return o.Apply(applier).(AnyMapOutput)
-}
-
-// ApplyAnyMapWithContext is like ApplyWithContext, but returns a AnyMapOutput.
-func (o *OutputState) ApplyAnyMapWithContext(ctx context.Context, applier interface{}) AnyMapOutput {
-	return o.ApplyWithContext(ctx, applier).(AnyMapOutput)
 }
 
 // ApplyArchive is like Apply, but returns a ArchiveOutput.
@@ -552,6 +523,26 @@ func (o *OutputState) ApplyIDMap(applier interface{}) IDMapOutput {
 // ApplyIDMapWithContext is like ApplyWithContext, but returns a IDMapOutput.
 func (o *OutputState) ApplyIDMapWithContext(ctx context.Context, applier interface{}) IDMapOutput {
 	return o.ApplyWithContext(ctx, applier).(IDMapOutput)
+}
+
+// ApplyArray is like Apply, but returns a ArrayOutput.
+func (o *OutputState) ApplyArray(applier interface{}) ArrayOutput {
+	return o.Apply(applier).(ArrayOutput)
+}
+
+// ApplyArrayWithContext is like ApplyWithContext, but returns a ArrayOutput.
+func (o *OutputState) ApplyArrayWithContext(ctx context.Context, applier interface{}) ArrayOutput {
+	return o.ApplyWithContext(ctx, applier).(ArrayOutput)
+}
+
+// ApplyMap is like Apply, but returns a MapOutput.
+func (o *OutputState) ApplyMap(applier interface{}) MapOutput {
+	return o.Apply(applier).(MapOutput)
+}
+
+// ApplyMapWithContext is like ApplyWithContext, but returns a MapOutput.
+func (o *OutputState) ApplyMapWithContext(ctx context.Context, applier interface{}) MapOutput {
+	return o.ApplyWithContext(ctx, applier).(MapOutput)
 }
 
 // ApplyInt is like Apply, but returns a IntOutput.
@@ -914,23 +905,23 @@ func (o *OutputState) ApplyUint8MapWithContext(ctx context.Context, applier inte
 	return o.ApplyWithContext(ctx, applier).(Uint8MapOutput)
 }
 
-// All returns an AnyArrayOutput that will resolve when all of the provided outputs will resolve. Each element of the
+// All returns an ArrayOutput that will resolve when all of the provided outputs will resolve. Each element of the
 // array will contain the resolved value of the corresponding output. The output will be rejected if any of the inputs
 // is rejected.
-func All(outputs ...Output) AnyArrayOutput {
+func All(outputs ...Output) ArrayOutput {
 	return AllWithContext(context.Background(), outputs...)
 }
 
-// AllWithContext returns an AnyArrayOutput that will resolve when all of the provided outputs will resolve. Each
+// AllWithContext returns an ArrayOutput that will resolve when all of the provided outputs will resolve. Each
 // element of the array will contain the resolved value of the corresponding output. The output will be rejected if any
 // of the inputs is rejected.
-func AllWithContext(ctx context.Context, outputs ...Output) AnyArrayOutput {
+func AllWithContext(ctx context.Context, outputs ...Output) ArrayOutput {
 	var deps []Resource
 	for _, o := range outputs {
 		deps = append(deps, o.dependencies()...)
 	}
 
-	result := newOutputState(anyArrayType, deps...)
+	result := newOutputState(arrayType, deps...)
 	go func() {
 		arr := make([]interface{}, len(outputs))
 
@@ -944,7 +935,251 @@ func AllWithContext(ctx context.Context, outputs ...Output) AnyArrayOutput {
 		}
 		result.fulfill(arr, known, nil)
 	}()
-	return AnyArrayOutput{result}
+	return ArrayOutput{result}
+}
+
+func gatherDependencySet(input reflect.Value, deps map[Resource]struct{}) {
+	inputV := input.Interface()
+
+	// If the input does not implement the Input interface, it has no dependencies.
+	if _, ok := inputV.(Input); !ok {
+		return
+	}
+
+	// Check for an Output that we can pull dependencies off of.
+	if output, ok := inputV.(Output); ok {
+		for _, d := range output.dependencies() {
+			deps[d] = struct{}{}
+		}
+		return
+	}
+
+	switch input.Kind() {
+	case reflect.Struct:
+		numFields := input.Type().NumField()
+		for i := 0; i < numFields; i++ {
+			gatherDependencySet(input.Field(i), deps)
+		}
+	case reflect.Slice:
+		l := input.Len()
+		for i := 0; i < l; i++ {
+			gatherDependencySet(input.Index(i), deps)
+		}
+	case reflect.Map:
+		iter := input.MapRange()
+		for iter.Next() {
+			gatherDependencySet(iter.Key(), deps)
+			gatherDependencySet(iter.Value(), deps)
+		}
+	}
+}
+
+func gatherDependencies(input Input) []Resource {
+	depSet := make(map[Resource]struct{})
+	gatherDependencySet(reflect.ValueOf(input), depSet)
+
+	if len(depSet) == 0 {
+		return nil
+	}
+
+	deps := make([]Resource, 0, len(depSet))
+	for d := range depSet {
+		deps = append(deps, d)
+	}
+	return deps
+}
+
+func awaitStructFields(ctx context.Context, input reflect.Value, resolved reflect.Value) (bool, error) {
+	inputType, resolvedType := input.Type(), resolved.Type()
+
+	contract.Assert(inputType.Kind() == reflect.Struct)
+	contract.Assert(resolvedType.Kind() == reflect.Struct)
+
+	// We need to map the fields of the input struct to those of the output struct. We'll build a mapping from name to
+	// to field index for the resolved type up front.
+	nameToIndex := map[string]int{}
+	numFields := resolvedType.NumField()
+	for i := 0; i < numFields; i++ {
+		nameToIndex[resolvedType.Field(i).Name] = i
+	}
+
+	// Now, resolve each field in the input.
+	numFields = inputType.NumField()
+	for i := 0; i < numFields; i++ {
+		fieldName := inputType.Field(i).Name
+		j, ok := nameToIndex[fieldName]
+		if !ok {
+			err := errors.Errorf("unknown field %v when resolving %v to %v", fieldName, inputType, resolvedType)
+			return true, err
+		}
+
+		// Delete the mapping to indicate that we've resolved the field.
+		delete(nameToIndex, fieldName)
+
+		known, err := awaitInputs(ctx, input.Field(i), resolved.Field(j))
+		if err != nil || !known {
+			return known, err
+		}
+	}
+
+	// Check for unassigned fields.
+	if len(nameToIndex) != 0 {
+		missing := make([]string, 0, len(nameToIndex))
+		for name := range nameToIndex {
+			missing = append(missing, name)
+		}
+		err := errors.Errorf("missing fields %s when resolving %v to %v", strings.Join(missing, ", "), inputType,
+			resolvedType)
+		return true, err
+	}
+
+	return true, nil
+}
+
+func awaitInputs(ctx context.Context, input reflect.Value, resolved reflect.Value) (bool, error) {
+	contract.Assert(resolved.CanSet())
+	contract.Assert(input.IsValid())
+	contract.Assert(input.CanInterface())
+
+	inputV := input.Interface()
+
+	// If the input does not implement the Input interface, we will stop here.
+	asInput, ok := inputV.(Input)
+	if !ok {
+		if !input.Type().AssignableTo(resolved.Type()) {
+			return true, errors.Errorf("cannot resolve a %v to a %v", resolved.Type(), input.Type())
+		}
+		resolved.Set(input)
+		return true, nil
+	}
+
+	// Check for some well-known types.
+	switch inputV := inputV.(type) {
+	case *archive, *asset:
+		// These are already fully-resolved.
+		resolved.Set(reflect.ValueOf(inputV))
+		return true, nil
+	case Output:
+		v, known, err := inputV.await(ctx)
+		if err != nil || !known {
+			return known, err
+		}
+		input = reflect.ValueOf(v)
+
+		if !input.Type().AssignableTo(resolved.Type()) {
+			return true, errors.Errorf("cannot resolve a %v to a %v", resolved.Type(), input.Type())
+		}
+
+		resolved.Set(input)
+		return true, nil
+	}
+
+	inputType, resolvedType := input.Type(), resolved.Type()
+
+	// If the input is an interface, poke through to its concrete type.
+	if inputType.Kind() == reflect.Interface {
+		input = input.Elem()
+		inputType = input.Type()
+	}
+
+	// If the dest type is an interface, we may not be able to assign to it.
+	if resolvedType.Kind() == reflect.Interface {
+		// Pull the element type from the input type.
+		elementType := asInput.ElementType()
+		if !elementType.AssignableTo(resolvedType) {
+			return false, errors.Errorf("cannot resolve a %v to a %v", resolvedType, elementType)
+		}
+
+		// Create a new resolved value using the element type.
+		dest := reflect.New(elementType).Elem()
+		resolved.Set(dest)
+		resolved, resolvedType = dest, elementType
+	}
+
+	// Now, examine the type and continue accordingly.
+	if inputType.Kind() != resolvedType.Kind() {
+		return false, errors.Errorf("cannot resolve a %v to a %v", resolvedType, inputType)
+	}
+
+	switch inputType.Kind() {
+	case reflect.Struct:
+		return awaitStructFields(ctx, input, resolved)
+	case reflect.Slice:
+		l := input.Len()
+		slice := reflect.MakeSlice(resolvedType, l, l)
+
+		for i := 0; i < l; i++ {
+			eknown, err := awaitInputs(ctx, input.Index(i), slice.Index(i))
+			if err != nil || !eknown {
+				return eknown, err
+			}
+		}
+
+		resolved.Set(slice)
+		return true, nil
+	case reflect.Map:
+		result := reflect.MakeMap(resolvedType)
+		resolvedKeyType, resolvedValueType := resolvedType.Key(), resolvedType.Elem()
+
+		iter := input.MapRange()
+		for iter.Next() {
+			kv := reflect.New(resolvedKeyType).Elem()
+			known, err := awaitInputs(ctx, iter.Key(), kv)
+			if err != nil || !known {
+				return known, err
+			}
+
+			vv := reflect.New(resolvedValueType).Elem()
+			known, err = awaitInputs(ctx, iter.Value(), vv)
+			if err != nil || !known {
+				return known, err
+			}
+
+			result.SetMapIndex(kv, vv)
+		}
+
+		resolved.Set(result)
+		return true, nil
+	default:
+		if !inputType.AssignableTo(resolvedType) {
+			if !inputType.ConvertibleTo(resolvedType) {
+				return true, errors.Errorf("cannot resolve a %v to a %v", resolvedType, inputType)
+			}
+			input = input.Convert(resolvedType)
+		}
+		resolved.Set(input)
+		return true, nil
+	}
+}
+
+// ToOutput returns an Output that will resolve when all Inputs contained in the given Input have resolved.
+func ToOutput(input Input) Output {
+	return ToOutputWithContext(context.Background(), input)
+}
+
+// ToOutputWithContext returns an Output that will resolve when all Outputs contained in the given Input have
+// resolved.
+func ToOutputWithContext(ctx context.Context, input Input) Output {
+	elementType := input.ElementType()
+
+	resultType := anyOutputType
+	if ot, ok := concreteTypeToOutputType.Load(elementType); ok {
+		resultType = ot.(reflect.Type)
+	}
+
+	result := newOutput(resultType, gatherDependencies(input)...)
+	go func() {
+		element := reflect.New(elementType).Elem()
+
+		known, err := awaitInputs(ctx, reflect.ValueOf(input), element)
+		if err != nil || !known {
+			result.fulfill(nil, known, err)
+			return
+		}
+
+		result.resolve(element.Interface(), true)
+	}()
+	return result
 }
 
 // Input is the type of a generic input value for a Pulumi resource. This type is used in conjunction with Output
@@ -1016,103 +1251,15 @@ type Input interface {
 	ElementType() reflect.Type
 }
 
-type anyInput struct {
-	v interface{}
-}
-
-// Any creates a new AnyInput value.
-func Any(v interface{}) AnyInput {
-	return anyInput{v: v}
-}
-
 var anyType = reflect.TypeOf((*interface{})(nil)).Elem()
 
-// AnyInput is an input type that accepts Any and AnyOutput values.
-type AnyInput interface {
-	Input
-
-	// nolint: unused
-	isAny()
-}
-
-// ElementType returns the element type of this Input (interface{}).
-func (anyInput) ElementType() reflect.Type {
-	return anyType
-}
-
-func (anyInput) isAny() {}
-
-// AnyOutput is an Output that returns interface{} values.
 type AnyOutput struct{ *OutputState }
 
-// ElementType returns the element type of this Output (interface{}).
 func (AnyOutput) ElementType() reflect.Type {
 	return anyType
 }
 
-func (AnyOutput) isAny() {}
-
-var anyArrayType = reflect.TypeOf((*[]interface{})(nil)).Elem()
-
-// AnyArrayInput is an input type that accepts AnyArray and AnyArrayOutput values.
-type AnyArrayInput interface {
-	Input
-
-	// nolint: unused
-	isAnyArray()
-}
-
-// AnyArray is an input type for []AnyInput values.
-type AnyArray []AnyInput
-
-// ElementType returns the element type of this Input ([]interface{}).
-func (AnyArray) ElementType() reflect.Type {
-	return anyArrayType
-}
-
-func (AnyArray) isAnyArray() {}
-
-// AnyArrayOutput is an Output that returns []AnyInput values.
-type AnyArrayOutput struct{ *OutputState }
-
-// ElementType returns the element type of this Output ([]interface{}).
-func (AnyArrayOutput) ElementType() reflect.Type {
-	return anyArrayType
-}
-
-func (AnyArrayOutput) isAnyArray() {}
-
-var anyMapType = reflect.TypeOf((*map[string]interface{})(nil)).Elem()
-
-// AnyMapInput is an input type that accepts AnyMap and AnyMapOutput values.
-type AnyMapInput interface {
-	Input
-
-	// nolint: unused
-	isAnyMap()
-}
-
-// AnyMap is an input type for map[string]AnyInput values.
-type AnyMap map[string]AnyInput
-
-// ElementType returns the element type of this Input (map[string]interface{}).
-func (AnyMap) ElementType() reflect.Type {
-	return anyMapType
-}
-
-func (AnyMap) isAnyMap() {}
-
-// AnyMapOutput is an Output that returns map[string]AnyInput values.
-type AnyMapOutput struct{ *OutputState }
-
-// ElementType returns the element type of this Output (map[string]interface{}).
-func (AnyMapOutput) ElementType() reflect.Type {
-	return anyMapType
-}
-
-func (AnyMapOutput) isAnyMap() {}
-
-var archiveType = reflect.TypeOf((*Archive)(nil)).Elem()
+var archiveType = reflect.TypeOf((**archive)(nil)).Elem()
 
 // ArchiveInput is an input type that accepts Archive and ArchiveOutput values.
 type ArchiveInput interface {
@@ -1122,7 +1269,7 @@ type ArchiveInput interface {
 	isArchive()
 }
 
-// ElementType returns the element type of this Input (Archive).
+// ElementType returns the element type of this Input (*archive).
 func (*archive) ElementType() reflect.Type {
 	return archiveType
 }
@@ -1131,10 +1278,10 @@ func (*archive) isArchive() {}
 
 func (*archive) isAssetOrArchive() {}
 
-// ArchiveOutput is an Output that returns Archive values.
+// ArchiveOutput is an Output that returns *archive values.
 type ArchiveOutput struct{ *OutputState }
 
-// ElementType returns the element type of this Output (Archive).
+// ElementType returns the element type of this Output (*archive).
 func (ArchiveOutput) ElementType() reflect.Type {
 	return archiveType
 }
@@ -1143,7 +1290,7 @@ func (ArchiveOutput) isArchive() {}
 
 func (ArchiveOutput) isAssetOrArchive() {}
 
-var archiveArrayType = reflect.TypeOf((*[]Archive)(nil)).Elem()
+var archiveArrayType = reflect.TypeOf((*[]*archive)(nil)).Elem()
 
 // ArchiveArrayInput is an input type that accepts ArchiveArray and ArchiveArrayOutput values.
 type ArchiveArrayInput interface {
@@ -1156,7 +1303,7 @@ type ArchiveArrayInput interface {
 // ArchiveArray is an input type for []ArchiveInput values.
 type ArchiveArray []ArchiveInput
 
-// ElementType returns the element type of this Input ([]Archive).
+// ElementType returns the element type of this Input ([]*archive).
 func (ArchiveArray) ElementType() reflect.Type {
 	return archiveArrayType
 }
@@ -1166,14 +1313,14 @@ func (ArchiveArray) isArchiveArray() {}
 // ArchiveArrayOutput is an Output that returns []ArchiveInput values.
 type ArchiveArrayOutput struct{ *OutputState }
 
-// ElementType returns the element type of this Output ([]Archive).
+// ElementType returns the element type of this Output ([]*archive).
 func (ArchiveArrayOutput) ElementType() reflect.Type {
 	return archiveArrayType
 }
 
 func (ArchiveArrayOutput) isArchiveArray() {}
 
-var archiveMapType = reflect.TypeOf((*map[string]Archive)(nil)).Elem()
+var archiveMapType = reflect.TypeOf((*map[string]*archive)(nil)).Elem()
 
 // ArchiveMapInput is an input type that accepts ArchiveMap and ArchiveMapOutput values.
 type ArchiveMapInput interface {
@@ -1186,7 +1333,7 @@ type ArchiveMapInput interface {
 // ArchiveMap is an input type for map[string]ArchiveInput values.
 type ArchiveMap map[string]ArchiveInput
 
-// ElementType returns the element type of this Input (map[string]Archive).
+// ElementType returns the element type of this Input (map[string]*archive).
 func (ArchiveMap) ElementType() reflect.Type {
 	return archiveMapType
 }
@@ -1196,14 +1343,14 @@ func (ArchiveMap) isArchiveMap() {}
 // ArchiveMapOutput is an Output that returns map[string]ArchiveInput values.
 type ArchiveMapOutput struct{ *OutputState }
 
-// ElementType returns the element type of this Output (map[string]Archive).
+// ElementType returns the element type of this Output (map[string]*archive).
 func (ArchiveMapOutput) ElementType() reflect.Type {
 	return archiveMapType
 }
 
 func (ArchiveMapOutput) isArchiveMap() {}
 
-var assetType = reflect.TypeOf((*Asset)(nil)).Elem()
+var assetType = reflect.TypeOf((**asset)(nil)).Elem()
 
 // AssetInput is an input type that accepts Asset and AssetOutput values.
 type AssetInput interface {
@@ -1213,7 +1360,7 @@ type AssetInput interface {
 	isAsset()
 }
 
-// ElementType returns the element type of this Input (Asset).
+// ElementType returns the element type of this Input (*asset).
 func (*asset) ElementType() reflect.Type {
 	return assetType
 }
@@ -1222,10 +1369,10 @@ func (*asset) isAsset() {}
 
 func (*asset) isAssetOrArchive() {}
 
-// AssetOutput is an Output that returns Asset values.
+// AssetOutput is an Output that returns *asset values.
 type AssetOutput struct{ *OutputState }
 
-// ElementType returns the element type of this Output (Asset).
+// ElementType returns the element type of this Output (*asset).
 func (AssetOutput) ElementType() reflect.Type {
 	return assetType
 }
@@ -1234,7 +1381,7 @@ func (AssetOutput) isAsset() {}
 
 func (AssetOutput) isAssetOrArchive() {}
 
-var assetArrayType = reflect.TypeOf((*[]Asset)(nil)).Elem()
+var assetArrayType = reflect.TypeOf((*[]*asset)(nil)).Elem()
 
 // AssetArrayInput is an input type that accepts AssetArray and AssetArrayOutput values.
 type AssetArrayInput interface {
@@ -1247,7 +1394,7 @@ type AssetArrayInput interface {
 // AssetArray is an input type for []AssetInput values.
 type AssetArray []AssetInput
 
-// ElementType returns the element type of this Input ([]Asset).
+// ElementType returns the element type of this Input ([]*asset).
 func (AssetArray) ElementType() reflect.Type {
 	return assetArrayType
 }
@@ -1257,14 +1404,14 @@ func (AssetArray) isAssetArray() {}
 // AssetArrayOutput is an Output that returns []AssetInput values.
 type AssetArrayOutput struct{ *OutputState }
 
-// ElementType returns the element type of this Output ([]Asset).
+// ElementType returns the element type of this Output ([]*asset).
 func (AssetArrayOutput) ElementType() reflect.Type {
 	return assetArrayType
 }
 
 func (AssetArrayOutput) isAssetArray() {}
 
-var assetMapType = reflect.TypeOf((*map[string]Asset)(nil)).Elem()
+var assetMapType = reflect.TypeOf((*map[string]*asset)(nil)).Elem()
 
 // AssetMapInput is an input type that accepts AssetMap and AssetMapOutput values.
 type AssetMapInput interface {
@@ -1277,7 +1424,7 @@ type AssetMapInput interface {
 // AssetMap is an input type for map[string]AssetInput values.
 type AssetMap map[string]AssetInput
 
-// ElementType returns the element type of this Input (map[string]Asset).
+// ElementType returns the element type of this Input (map[string]*asset).
 func (AssetMap) ElementType() reflect.Type {
 	return assetMapType
 }
@@ -1287,7 +1434,7 @@ func (AssetMap) isAssetMap() {}
 // AssetMapOutput is an Output that returns map[string]AssetInput values.
 type AssetMapOutput struct{ *OutputState }
 
-// ElementType returns the element type of this Output (map[string]Asset).
+// ElementType returns the element type of this Output (map[string]*asset).
 func (AssetMapOutput) ElementType() reflect.Type {
 	return assetMapType
 }
@@ -1734,6 +1881,66 @@ func (IDMapOutput) ElementType() reflect.Type {
 }
 
 func (IDMapOutput) isIDMap() {}
+
+var arrayType = reflect.TypeOf((*[]interface{})(nil)).Elem()
+
+// ArrayInput is an input type that accepts Array and ArrayOutput values.
+type ArrayInput interface {
+	Input
+
+	// nolint: unused
+	isArray()
+}
+
+// Array is an input type for []Input values.
+type Array []Input
+
+// ElementType returns the element type of this Input ([]interface{}).
+func (Array) ElementType() reflect.Type {
+	return arrayType
+}
+
+func (Array) isArray() {}
+
+// ArrayOutput is an Output that returns []Input values.
+type ArrayOutput struct{ *OutputState }
+
+// ElementType returns the element type of this Output ([]interface{}).
+func (ArrayOutput) ElementType() reflect.Type {
+	return arrayType
+}
+
+func (ArrayOutput) isArray() {}
+
+var mapType = reflect.TypeOf((*map[string]interface{})(nil)).Elem()
+
+// MapInput is an input type that accepts Map and MapOutput values.
+type MapInput interface {
+	Input
+
+	// nolint: unused
+	isMap()
+}
+
+// Map is an input type for map[string]Input values.
+type Map map[string]Input
+
+// ElementType returns the element type of this Input (map[string]interface{}).
+func (Map) ElementType() reflect.Type {
+	return mapType
+}
+
+func (Map) isMap() {}
+
+// MapOutput is an Output that returns map[string]Input values.
+type MapOutput struct{ *OutputState }
+
+// ElementType returns the element type of this Output (map[string]interface{}).
+func (MapOutput) ElementType() reflect.Type {
+	return mapType
+}
+
+func (MapOutput) isMap() {}
 
 var intType = reflect.TypeOf((*int)(nil)).Elem()
 
@@ -2817,9 +3024,6 @@ func (Uint8MapOutput) ElementType() reflect.Type {
 func (Uint8MapOutput) isUint8Map() {}
 
 func init() {
-	RegisterOutputType(AnyOutput{})
-	RegisterOutputType(AnyArrayOutput{})
-	RegisterOutputType(AnyMapOutput{})
 	RegisterOutputType(ArchiveOutput{})
 	RegisterOutputType(ArchiveArrayOutput{})
 	RegisterOutputType(ArchiveMapOutput{})
@@ -2841,6 +3045,8 @@ func init() {
 	RegisterOutputType(IDOutput{})
 	RegisterOutputType(IDArrayOutput{})
 	RegisterOutputType(IDMapOutput{})
+	RegisterOutputType(ArrayOutput{})
+	RegisterOutputType(MapOutput{})
 	RegisterOutputType(IntOutput{})
 	RegisterOutputType(IntArrayOutput{})
 	RegisterOutputType(IntMapOutput{})
