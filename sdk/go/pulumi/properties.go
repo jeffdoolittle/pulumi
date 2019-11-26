@@ -905,37 +905,18 @@ func (o *OutputState) ApplyUint8MapWithContext(ctx context.Context, applier inte
 	return o.ApplyWithContext(ctx, applier).(Uint8MapOutput)
 }
 
-// All returns an ArrayOutput that will resolve when all of the provided outputs will resolve. Each element of the
+// All returns an ArrayOutput that will resolve when all of the provided inputs will resolve. Each element of the
 // array will contain the resolved value of the corresponding output. The output will be rejected if any of the inputs
 // is rejected.
-func All(outputs ...Output) ArrayOutput {
-	return AllWithContext(context.Background(), outputs...)
+func All(inputs ...Input) ArrayOutput {
+	return AllWithContext(context.Background(), inputs...)
 }
 
-// AllWithContext returns an ArrayOutput that will resolve when all of the provided outputs will resolve. Each
+// AllWithContext returns an ArrayOutput that will resolve when all of the provided inputs will resolve. Each
 // element of the array will contain the resolved value of the corresponding output. The output will be rejected if any
 // of the inputs is rejected.
-func AllWithContext(ctx context.Context, outputs ...Output) ArrayOutput {
-	var deps []Resource
-	for _, o := range outputs {
-		deps = append(deps, o.dependencies()...)
-	}
-
-	result := newOutputState(arrayType, deps...)
-	go func() {
-		arr := make([]interface{}, len(outputs))
-
-		known := true
-		for i, o := range outputs {
-			ov, oKnown, err := o.await(ctx)
-			if err != nil {
-				result.reject(err)
-			}
-			arr[i], known = ov, known && oKnown
-		}
-		result.fulfill(arr, known, nil)
-	}()
-	return ArrayOutput{result}
+func AllWithContext(ctx context.Context, inputs ...Input) ArrayOutput {
+	return ToOutputWithContext(ctx, Array(inputs)).(ArrayOutput)
 }
 
 func gatherDependencySet(input reflect.Value, deps map[Resource]struct{}) {
@@ -1310,7 +1291,7 @@ func (ArchiveArray) ElementType() reflect.Type {
 
 func (ArchiveArray) isArchiveArray() {}
 
-// ArchiveArrayOutput is an Output that returns []ArchiveInput values.
+// ArchiveArrayOutput is an Output that returns []*archive values.
 type ArchiveArrayOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output ([]*archive).
@@ -1340,7 +1321,7 @@ func (ArchiveMap) ElementType() reflect.Type {
 
 func (ArchiveMap) isArchiveMap() {}
 
-// ArchiveMapOutput is an Output that returns map[string]ArchiveInput values.
+// ArchiveMapOutput is an Output that returns map[string]*archive values.
 type ArchiveMapOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output (map[string]*archive).
@@ -1401,7 +1382,7 @@ func (AssetArray) ElementType() reflect.Type {
 
 func (AssetArray) isAssetArray() {}
 
-// AssetArrayOutput is an Output that returns []AssetInput values.
+// AssetArrayOutput is an Output that returns []*asset values.
 type AssetArrayOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output ([]*asset).
@@ -1431,7 +1412,7 @@ func (AssetMap) ElementType() reflect.Type {
 
 func (AssetMap) isAssetMap() {}
 
-// AssetMapOutput is an Output that returns map[string]AssetInput values.
+// AssetMapOutput is an Output that returns map[string]*asset values.
 type AssetMapOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output (map[string]*asset).
@@ -1481,7 +1462,7 @@ func (AssetOrArchiveArray) ElementType() reflect.Type {
 
 func (AssetOrArchiveArray) isAssetOrArchiveArray() {}
 
-// AssetOrArchiveArrayOutput is an Output that returns []AssetOrArchiveInput values.
+// AssetOrArchiveArrayOutput is an Output that returns []AssetOrArchive values.
 type AssetOrArchiveArrayOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output ([]AssetOrArchive).
@@ -1511,7 +1492,7 @@ func (AssetOrArchiveMap) ElementType() reflect.Type {
 
 func (AssetOrArchiveMap) isAssetOrArchiveMap() {}
 
-// AssetOrArchiveMapOutput is an Output that returns map[string]AssetOrArchiveInput values.
+// AssetOrArchiveMapOutput is an Output that returns map[string]AssetOrArchive values.
 type AssetOrArchiveMapOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output (map[string]AssetOrArchive).
@@ -1571,7 +1552,7 @@ func (BoolArray) ElementType() reflect.Type {
 
 func (BoolArray) isBoolArray() {}
 
-// BoolArrayOutput is an Output that returns []BoolInput values.
+// BoolArrayOutput is an Output that returns []bool values.
 type BoolArrayOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output ([]bool).
@@ -1601,7 +1582,7 @@ func (BoolMap) ElementType() reflect.Type {
 
 func (BoolMap) isBoolMap() {}
 
-// BoolMapOutput is an Output that returns map[string]BoolInput values.
+// BoolMapOutput is an Output that returns map[string]bool values.
 type BoolMapOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output (map[string]bool).
@@ -1661,7 +1642,7 @@ func (Float32Array) ElementType() reflect.Type {
 
 func (Float32Array) isFloat32Array() {}
 
-// Float32ArrayOutput is an Output that returns []Float32Input values.
+// Float32ArrayOutput is an Output that returns []float32 values.
 type Float32ArrayOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output ([]float32).
@@ -1691,7 +1672,7 @@ func (Float32Map) ElementType() reflect.Type {
 
 func (Float32Map) isFloat32Map() {}
 
-// Float32MapOutput is an Output that returns map[string]Float32Input values.
+// Float32MapOutput is an Output that returns map[string]float32 values.
 type Float32MapOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output (map[string]float32).
@@ -1751,7 +1732,7 @@ func (Float64Array) ElementType() reflect.Type {
 
 func (Float64Array) isFloat64Array() {}
 
-// Float64ArrayOutput is an Output that returns []Float64Input values.
+// Float64ArrayOutput is an Output that returns []float64 values.
 type Float64ArrayOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output ([]float64).
@@ -1781,7 +1762,7 @@ func (Float64Map) ElementType() reflect.Type {
 
 func (Float64Map) isFloat64Map() {}
 
-// Float64MapOutput is an Output that returns map[string]Float64Input values.
+// Float64MapOutput is an Output that returns map[string]float64 values.
 type Float64MapOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output (map[string]float64).
@@ -1842,7 +1823,7 @@ func (IDArray) ElementType() reflect.Type {
 
 func (IDArray) isIDArray() {}
 
-// IDArrayOutput is an Output that returns []IDInput values.
+// IDArrayOutput is an Output that returns []ID values.
 type IDArrayOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output ([]ID).
@@ -1872,7 +1853,7 @@ func (IDMap) ElementType() reflect.Type {
 
 func (IDMap) isIDMap() {}
 
-// IDMapOutput is an Output that returns map[string]IDInput values.
+// IDMapOutput is an Output that returns map[string]ID values.
 type IDMapOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output (map[string]ID).
@@ -1902,7 +1883,7 @@ func (Array) ElementType() reflect.Type {
 
 func (Array) isArray() {}
 
-// ArrayOutput is an Output that returns []Input values.
+// ArrayOutput is an Output that returns []interface{} values.
 type ArrayOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output ([]interface{}).
@@ -1932,7 +1913,7 @@ func (Map) ElementType() reflect.Type {
 
 func (Map) isMap() {}
 
-// MapOutput is an Output that returns map[string]Input values.
+// MapOutput is an Output that returns map[string]interface{} values.
 type MapOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output (map[string]interface{}).
@@ -1992,7 +1973,7 @@ func (IntArray) ElementType() reflect.Type {
 
 func (IntArray) isIntArray() {}
 
-// IntArrayOutput is an Output that returns []IntInput values.
+// IntArrayOutput is an Output that returns []int values.
 type IntArrayOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output ([]int).
@@ -2022,7 +2003,7 @@ func (IntMap) ElementType() reflect.Type {
 
 func (IntMap) isIntMap() {}
 
-// IntMapOutput is an Output that returns map[string]IntInput values.
+// IntMapOutput is an Output that returns map[string]int values.
 type IntMapOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output (map[string]int).
@@ -2082,7 +2063,7 @@ func (Int16Array) ElementType() reflect.Type {
 
 func (Int16Array) isInt16Array() {}
 
-// Int16ArrayOutput is an Output that returns []Int16Input values.
+// Int16ArrayOutput is an Output that returns []int16 values.
 type Int16ArrayOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output ([]int16).
@@ -2112,7 +2093,7 @@ func (Int16Map) ElementType() reflect.Type {
 
 func (Int16Map) isInt16Map() {}
 
-// Int16MapOutput is an Output that returns map[string]Int16Input values.
+// Int16MapOutput is an Output that returns map[string]int16 values.
 type Int16MapOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output (map[string]int16).
@@ -2172,7 +2153,7 @@ func (Int32Array) ElementType() reflect.Type {
 
 func (Int32Array) isInt32Array() {}
 
-// Int32ArrayOutput is an Output that returns []Int32Input values.
+// Int32ArrayOutput is an Output that returns []int32 values.
 type Int32ArrayOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output ([]int32).
@@ -2202,7 +2183,7 @@ func (Int32Map) ElementType() reflect.Type {
 
 func (Int32Map) isInt32Map() {}
 
-// Int32MapOutput is an Output that returns map[string]Int32Input values.
+// Int32MapOutput is an Output that returns map[string]int32 values.
 type Int32MapOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output (map[string]int32).
@@ -2262,7 +2243,7 @@ func (Int64Array) ElementType() reflect.Type {
 
 func (Int64Array) isInt64Array() {}
 
-// Int64ArrayOutput is an Output that returns []Int64Input values.
+// Int64ArrayOutput is an Output that returns []int64 values.
 type Int64ArrayOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output ([]int64).
@@ -2292,7 +2273,7 @@ func (Int64Map) ElementType() reflect.Type {
 
 func (Int64Map) isInt64Map() {}
 
-// Int64MapOutput is an Output that returns map[string]Int64Input values.
+// Int64MapOutput is an Output that returns map[string]int64 values.
 type Int64MapOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output (map[string]int64).
@@ -2352,7 +2333,7 @@ func (Int8Array) ElementType() reflect.Type {
 
 func (Int8Array) isInt8Array() {}
 
-// Int8ArrayOutput is an Output that returns []Int8Input values.
+// Int8ArrayOutput is an Output that returns []int8 values.
 type Int8ArrayOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output ([]int8).
@@ -2382,7 +2363,7 @@ func (Int8Map) ElementType() reflect.Type {
 
 func (Int8Map) isInt8Map() {}
 
-// Int8MapOutput is an Output that returns map[string]Int8Input values.
+// Int8MapOutput is an Output that returns map[string]int8 values.
 type Int8MapOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output (map[string]int8).
@@ -2442,7 +2423,7 @@ func (StringArray) ElementType() reflect.Type {
 
 func (StringArray) isStringArray() {}
 
-// StringArrayOutput is an Output that returns []StringInput values.
+// StringArrayOutput is an Output that returns []string values.
 type StringArrayOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output ([]string).
@@ -2472,7 +2453,7 @@ func (StringMap) ElementType() reflect.Type {
 
 func (StringMap) isStringMap() {}
 
-// StringMapOutput is an Output that returns map[string]StringInput values.
+// StringMapOutput is an Output that returns map[string]string values.
 type StringMapOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output (map[string]string).
@@ -2533,7 +2514,7 @@ func (URNArray) ElementType() reflect.Type {
 
 func (URNArray) isURNArray() {}
 
-// URNArrayOutput is an Output that returns []URNInput values.
+// URNArrayOutput is an Output that returns []URN values.
 type URNArrayOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output ([]URN).
@@ -2563,7 +2544,7 @@ func (URNMap) ElementType() reflect.Type {
 
 func (URNMap) isURNMap() {}
 
-// URNMapOutput is an Output that returns map[string]URNInput values.
+// URNMapOutput is an Output that returns map[string]URN values.
 type URNMapOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output (map[string]URN).
@@ -2623,7 +2604,7 @@ func (UintArray) ElementType() reflect.Type {
 
 func (UintArray) isUintArray() {}
 
-// UintArrayOutput is an Output that returns []UintInput values.
+// UintArrayOutput is an Output that returns []uint values.
 type UintArrayOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output ([]uint).
@@ -2653,7 +2634,7 @@ func (UintMap) ElementType() reflect.Type {
 
 func (UintMap) isUintMap() {}
 
-// UintMapOutput is an Output that returns map[string]UintInput values.
+// UintMapOutput is an Output that returns map[string]uint values.
 type UintMapOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output (map[string]uint).
@@ -2713,7 +2694,7 @@ func (Uint16Array) ElementType() reflect.Type {
 
 func (Uint16Array) isUint16Array() {}
 
-// Uint16ArrayOutput is an Output that returns []Uint16Input values.
+// Uint16ArrayOutput is an Output that returns []uint16 values.
 type Uint16ArrayOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output ([]uint16).
@@ -2743,7 +2724,7 @@ func (Uint16Map) ElementType() reflect.Type {
 
 func (Uint16Map) isUint16Map() {}
 
-// Uint16MapOutput is an Output that returns map[string]Uint16Input values.
+// Uint16MapOutput is an Output that returns map[string]uint16 values.
 type Uint16MapOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output (map[string]uint16).
@@ -2803,7 +2784,7 @@ func (Uint32Array) ElementType() reflect.Type {
 
 func (Uint32Array) isUint32Array() {}
 
-// Uint32ArrayOutput is an Output that returns []Uint32Input values.
+// Uint32ArrayOutput is an Output that returns []uint32 values.
 type Uint32ArrayOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output ([]uint32).
@@ -2833,7 +2814,7 @@ func (Uint32Map) ElementType() reflect.Type {
 
 func (Uint32Map) isUint32Map() {}
 
-// Uint32MapOutput is an Output that returns map[string]Uint32Input values.
+// Uint32MapOutput is an Output that returns map[string]uint32 values.
 type Uint32MapOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output (map[string]uint32).
@@ -2893,7 +2874,7 @@ func (Uint64Array) ElementType() reflect.Type {
 
 func (Uint64Array) isUint64Array() {}
 
-// Uint64ArrayOutput is an Output that returns []Uint64Input values.
+// Uint64ArrayOutput is an Output that returns []uint64 values.
 type Uint64ArrayOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output ([]uint64).
@@ -2923,7 +2904,7 @@ func (Uint64Map) ElementType() reflect.Type {
 
 func (Uint64Map) isUint64Map() {}
 
-// Uint64MapOutput is an Output that returns map[string]Uint64Input values.
+// Uint64MapOutput is an Output that returns map[string]uint64 values.
 type Uint64MapOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output (map[string]uint64).
@@ -2983,7 +2964,7 @@ func (Uint8Array) ElementType() reflect.Type {
 
 func (Uint8Array) isUint8Array() {}
 
-// Uint8ArrayOutput is an Output that returns []Uint8Input values.
+// Uint8ArrayOutput is an Output that returns []uint8 values.
 type Uint8ArrayOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output ([]uint8).
@@ -3013,7 +2994,7 @@ func (Uint8Map) ElementType() reflect.Type {
 
 func (Uint8Map) isUint8Map() {}
 
-// Uint8MapOutput is an Output that returns map[string]Uint8Input values.
+// Uint8MapOutput is an Output that returns map[string]uint8 values.
 type Uint8MapOutput struct{ *OutputState }
 
 // ElementType returns the element type of this Output (map[string]uint8).

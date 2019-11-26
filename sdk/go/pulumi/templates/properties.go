@@ -327,37 +327,18 @@ func (o *OutputState) Apply{{.Name}}WithContext(ctx context.Context, applier int
 }
 {{end}}
 
-// All returns an ArrayOutput that will resolve when all of the provided outputs will resolve. Each element of the
+// All returns an ArrayOutput that will resolve when all of the provided inputs will resolve. Each element of the
 // array will contain the resolved value of the corresponding output. The output will be rejected if any of the inputs
 // is rejected.
-func All(outputs ...Output) ArrayOutput {
-	return AllWithContext(context.Background(), outputs...)
+func All(inputs ...Input) ArrayOutput {
+	return AllWithContext(context.Background(), inputs...)
 }
 
-// AllWithContext returns an ArrayOutput that will resolve when all of the provided outputs will resolve. Each
+// AllWithContext returns an ArrayOutput that will resolve when all of the provided inputs will resolve. Each
 // element of the array will contain the resolved value of the corresponding output. The output will be rejected if any
 // of the inputs is rejected.
-func AllWithContext(ctx context.Context, outputs ...Output) ArrayOutput {
-	var deps []Resource
-	for _, o := range outputs {
-		deps = append(deps, o.dependencies()...)
-	}
-
-	result := newOutputState(arrayType, deps...)
-	go func() {
-		arr := make([]interface{}, len(outputs))
-
-		known := true
-		for i, o := range outputs {
-			ov, oKnown, err := o.await(ctx)
-			if err != nil {
-				result.reject(err)
-			}
-			arr[i], known = ov, known && oKnown
-		}
-		result.fulfill(arr, known, nil)
-	}()
-	return ArrayOutput{result}
+func AllWithContext(ctx context.Context, inputs ...Input) ArrayOutput {
+	return ToOutputWithContext(ctx, Array(inputs)).(ArrayOutput)
 }
 
 func gatherDependencySet(input reflect.Value, deps map[Resource]struct{}) {
@@ -710,7 +691,7 @@ func ({{$builtin.InputType}}) is{{$t}}() {}
 {{end}}
 {{end}}
 {{end}}
-// {{.Name}}Output is an Output that returns {{.Type}} values.
+// {{.Name}}Output is an Output that returns {{.ElementType}} values.
 type {{.Name}}Output struct  { *OutputState } 
 
 // ElementType returns the element type of this Output ({{.ElementType}}).
