@@ -1234,6 +1234,12 @@ type Input interface {
 
 var anyType = reflect.TypeOf((*interface{})(nil)).Elem()
 
+func Any(v interface{}) AnyOutput {
+	out, resolve, _ := NewOutput()
+	resolve(v)
+	return out.(AnyOutput)
+}
+
 type AnyOutput struct{ *OutputState }
 
 func (AnyOutput) ElementType() reflect.Type {

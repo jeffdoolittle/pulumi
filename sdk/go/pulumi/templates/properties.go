@@ -456,6 +456,13 @@ func awaitInputs(ctx context.Context, input reflect.Value, resolved reflect.Valu
 		return true, nil
 	}
 
+	// If the dest type is a pointer, allocate storage for the result.
+	if resolved.Kind() == reflect.Ptr {
+		elem := reflect.New(resolved.Type().Elem())
+		resolved.Set(elem)
+		resolved = elem.Elem()
+	}
+
 	// Check for some well-known types.
 	switch inputV := inputV.(type) {
 	case *archive, *asset:
@@ -655,6 +662,12 @@ type Input interface {
 }
 
 var anyType = reflect.TypeOf((*interface{})(nil)).Elem()
+
+func Any(v interface{}) AnyOutput {
+	out, resolve, _ := NewOutput()
+	resolve(v)
+	return out.(AnyOutput)
+}
 
 type AnyOutput struct { *OutputState }
 

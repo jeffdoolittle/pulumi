@@ -145,7 +145,9 @@ func marshalInput(v interface{}, await bool) (resource.PropertyValue, []Resource
 				if err != nil {
 					return resource.PropertyValue{}, nil, err
 				}
-				arr = append(arr, e)
+				if !e.IsNull() {
+					arr = append(arr, e)
+				}
 				deps = append(deps, d...)
 			}
 			return resource.NewArrayProperty(arr), deps, nil
@@ -164,8 +166,9 @@ func marshalInput(v interface{}, await bool) (resource.PropertyValue, []Resource
 				if err != nil {
 					return resource.PropertyValue{}, nil, err
 				}
-
-				obj[resource.PropertyKey(key.String())] = mv
+				if !mv.IsNull() {
+					obj[resource.PropertyKey(key.String())] = mv
+				}
 				deps = append(deps, d...)
 			}
 			return resource.NewObjectProperty(obj), deps, nil
@@ -184,7 +187,9 @@ func marshalInput(v interface{}, await bool) (resource.PropertyValue, []Resource
 					return resource.PropertyValue{}, nil, err
 				}
 
-				obj[resource.PropertyKey(tag)] = fv
+				if !fv.IsNull() {
+					obj[resource.PropertyKey(tag)] = fv
+				}
 				deps = append(deps, d...)
 			}
 			return resource.NewObjectProperty(obj), deps, nil

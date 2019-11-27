@@ -39,7 +39,7 @@ import (
 type Context struct {
 	ctx         context.Context
 	info        RunInfo
-	stackR      URN
+	stack       Resource
 	exports     map[string]Input
 	monitor     pulumirpc.ResourceMonitorClient
 	monitorConn *grpc.ClientConn
@@ -261,6 +261,19 @@ func (ctx *Context) ReadResource(
 		return errors.New("resource ID is required for lookup and cannot be empty")
 	}
 
+	if ctx.stack != nil {
+		hasParent := false
+		for _, o := range opts {
+			if o.Parent != nil {
+				hasParent = true
+				break
+			}
+		}
+		if !hasParent {
+			opts = append([]ResourceOpt{{Parent: ctx.stack}}, opts...)
+		}
+	}
+
 	// Note that we're about to make an outstanding RPC request, so that we can rendezvous during shutdown.
 	if err := ctx.beginRPC(); err != nil {
 		return err
@@ -351,6 +364,19 @@ func (ctx *Context) RegisterResource(
 	}
 
 	_, custom := resource.(CustomResource)
+
+	if ctx.stack != nil {
+		hasParent := false
+		for _, o := range opts {
+			if o.Parent != nil {
+				hasParent = true
+				break
+			}
+		}
+		if !hasParent {
+			opts = append([]ResourceOpt{{Parent: ctx.stack}}, opts...)
+		}
+	}
 
 	// Note that we're about to make an outstanding RPC request, so that we can rendezvous during shutdown.
 	if err := ctx.beginRPC(); err != nil {
@@ -480,6 +506,13 @@ func makeResourceState(resourceV Resource, providers map[string]ProviderResource
 
 	var rs *ResourceState
 	var crs *CustomResourceState
+
+	switch r := resourceV.(type) {
+	case *ResourceState:
+		rs = r
+	case *CustomResourceState:
+		crs = r
+	}
 
 	state := &resourceState{outputs: map[string]Output{}}
 	for i := 0; i < typ.NumField(); i++ {
@@ -675,6 +708,7 @@ func (ctx *Context) getTimeouts(opts ...ResourceOpt) *pulumirpc.RegisterResource
 // a boolean indicating whether the resource is to be protected, and the URN and ID of the resource's provider, if any.
 func (ctx *Context) getOpts(t string, providers map[string]ProviderResource, opts ...ResourceOpt) (
 	URN, []URN, bool, string, bool, ID, []string, error) {
+
 	var parent Resource
 	var deps []Resource
 	var protect bool
@@ -720,9 +754,7 @@ func (ctx *Context) getOpts(t string, providers map[string]ProviderResource, opt
 	}
 
 	var parentURN URN
-	if parent == nil {
-		parentURN = ctx.stackR
-	} else {
+	if parent != nil {
 		urn, _, err := parent.URN().awaitURN(context.TODO())
 		if err != nil {
 			return "", nil, false, "", false, "", nil, err
@@ -820,39 +852,49 @@ func (ctx *Context) waitForRPCs() {
 }
 
 // RegisterResourceOutputs completes the resource registration, attaching an optional set of computed outputs.
-func (ctx *Context) RegisterResourceOutputs(urn URN, outs map[string]Input) error {
-	outsResolved, _, _, err := marshalInputs(outs)
-	if err != nil {
-		return errors.Wrap(err, "marshaling outputs")
-	}
-
-	keepUnknowns := ctx.DryRun()
-	outsMarshalled, err := plugin.MarshalProperties(
-		outsResolved,
-		plugin.MarshalOptions{KeepUnknowns: keepUnknowns})
-	if err != nil {
-		return errors.Wrap(err, "marshaling outputs")
-	}
-
+func (ctx *Context) RegisterResourceOutputs(resource Resource, outs map[string]Input) error {
 	// Note that we're about to make an outstanding RPC request, so that we can rendezvous during shutdown.
-	if err = ctx.beginRPC(); err != nil {
+	if err := ctx.beginRPC(); err != nil {
 		return err
 	}
 
-	// Register the outputs
-	logging.V(9).Infof("RegisterResourceOutputs(%s): RPC call being made", urn)
-	_, err = ctx.monitor.RegisterResourceOutputs(ctx.ctx, &pulumirpc.RegisterResourceOutputsRequest{
-		Urn:     string(urn),
-		Outputs: outsMarshalled,
-	})
-	if err != nil {
-		return errors.Wrap(err, "registering outputs")
-	}
+	// TODO(pdg): keep track of any errors so we can fail the program
 
-	logging.V(9).Infof("RegisterResourceOutputs(%s): success", urn)
+	go func() {
+		// No matter the outcome, make sure all promises are resolved and that we've signaled completion of this RPC.
+		defer func() {
+			// Signal the completion of this RPC and notify any potential awaiters.
+			ctx.endRPC()
+		}()
 
-	// Signal the completion of this RPC and notify any potential awaiters.
-	ctx.endRPC()
+		urn, _, err := resource.URN().awaitURN(context.TODO())
+		if err != nil {
+			return
+		}
+
+		outsResolved, _, _, err := marshalInputs(outs)
+		if err != nil {
+			return
+		}
+
+		keepUnknowns := ctx.DryRun()
+		outsMarshalled, err := plugin.MarshalProperties(
+			outsResolved,
+			plugin.MarshalOptions{KeepUnknowns: keepUnknowns})
+		if err != nil {
+			return
+		}
+
+		// Register the outputs
+		logging.V(9).Infof("RegisterResourceOutputs(%s): RPC call being made", urn)
+		_, err = ctx.monitor.RegisterResourceOutputs(ctx.ctx, &pulumirpc.RegisterResourceOutputsRequest{
+			Urn:     string(urn),
+			Outputs: outsMarshalled,
+		})
+
+		logging.V(9).Infof("RegisterResourceOutputs(%s): %v", urn, err)
+	}()
+
 	return nil
 }
 
