@@ -126,7 +126,7 @@ func (ctx *Context) GetConfig(key string) (string, bool) {
 // Invoke will invoke a provider's function, identified by its token tok. This function call is synchronous.
 //
 // args and result must be pointers to struct values fields are appropriately tagged and typed for use with Pulumi.
-func (ctx *Context) Invoke(tok string, args interface{}, result interface{}, opts ...InvokeOpt) error {
+func (ctx *Context) Invoke(tok string, args interface{}, result interface{}, opts ...InvokeOption) error {
 	if tok == "" {
 		return errors.New("invoke token must not be empty")
 	}
@@ -136,24 +136,18 @@ func (ctx *Context) Invoke(tok string, args interface{}, result interface{}, opt
 		return errors.New("result must be a pointer to a struct value")
 	}
 
-	// Check for a provider option.
-	var provider string
-	for _, opt := range opts {
-		if opt.Parent != nil && opt.Provider == nil {
-			// attempt to use parent provider if no other is specified.
-			v, ok := opt.Parent.(*ResourceState)
-			if ok {
-				opt.Provider = v.GetProvider(tok)
-			}
+	options := &invokeOptions{}
+	for _, o := range opts {
+		o.applyInvokeOption(options)
+	}
+
+	var providerRef string
+	if provider := mergeProviders(tok, options.Parent, options.Provider, nil)[getPackage(tok)]; provider != nil {
+		pr, err := ctx.resolveProviderReference(provider)
+		if err != nil {
+			return err
 		}
-		if opt.Provider != nil {
-			pr, err := ctx.resolveProviderReference(opt.Provider)
-			if err != nil {
-				return err
-			}
-			provider = pr
-			break
-		}
+		providerRef = pr
 	}
 
 	// Serialize arguments. Outputs will not be awaited: instead, an error will be returned if any Outputs are present.
@@ -188,7 +182,7 @@ func (ctx *Context) Invoke(tok string, args interface{}, result interface{}, opt
 	resp, err := ctx.monitor.Invoke(ctx.ctx, &pulumirpc.InvokeRequest{
 		Tok:      tok,
 		Args:     rpcArgs,
-		Provider: provider,
+		Provider: providerRef,
 	})
 	if err != nil {
 		logging.V(9).Infof("Invoke(%s, ...): error: %v", tok, err)
@@ -252,7 +246,7 @@ func (ctx *Context) Invoke(tok string, args interface{}, result interface{}, opt
 //     err := ctx.ReadResource(tok, name, id, nil, &resource, opts...)
 //
 func (ctx *Context) ReadResource(
-	t, name string, id ID, props map[string]Input, resource CustomResource, opts ...ResourceOpt) error {
+	t, name string, id ID, props map[string]Input, resource CustomResource, opts ...ResourceOption) error {
 	if t == "" {
 		return errors.New("resource type argument cannot be empty")
 	} else if name == "" {
@@ -261,17 +255,12 @@ func (ctx *Context) ReadResource(
 		return errors.New("resource ID is required for lookup and cannot be empty")
 	}
 
-	if ctx.stack != nil {
-		hasParent := false
-		for _, o := range opts {
-			if o.Parent != nil {
-				hasParent = true
-				break
-			}
-		}
-		if !hasParent {
-			opts = append([]ResourceOpt{{Parent: ctx.stack}}, opts...)
-		}
+	options := &resourceOptions{}
+	for _, o := range opts {
+		o.applyResourceOption(options)
+	}
+	if options.Parent == nil {
+		options.Parent = ctx.stack
 	}
 
 	// Note that we're about to make an outstanding RPC request, so that we can rendezvous during shutdown.
@@ -280,7 +269,7 @@ func (ctx *Context) ReadResource(
 	}
 
 	// Create resolvers for the resource's outputs.
-	res := makeResourceState(resource, mergeProviders(t, opts...))
+	res := makeResourceState(resource, mergeProviders(t, options.Parent, options.Provider, options.Providers))
 
 	// Kick off the resource read operation.  This will happen asynchronously and resolve the above properties.
 	go func() {
@@ -295,7 +284,7 @@ func (ctx *Context) ReadResource(
 		}()
 
 		// Prepare the inputs for an impending operation.
-		inputs, err = ctx.prepareResourceInputs(props, t, res.providers, opts...)
+		inputs, err = ctx.prepareResourceInputs(props, t, res.providers, options)
 		if err != nil {
 			return
 		}
@@ -356,7 +345,7 @@ func (ctx *Context) ReadResource(
 //     err := ctx.RegisterResource(tok, name, props, &resource, opts...)
 //
 func (ctx *Context) RegisterResource(
-	t, name string, props map[string]Input, resource Resource, opts ...ResourceOpt) error {
+	t, name string, props map[string]Input, resource Resource, opts ...ResourceOption) error {
 	if t == "" {
 		return errors.New("resource type argument cannot be empty")
 	} else if name == "" {
@@ -365,17 +354,12 @@ func (ctx *Context) RegisterResource(
 
 	_, custom := resource.(CustomResource)
 
-	if ctx.stack != nil {
-		hasParent := false
-		for _, o := range opts {
-			if o.Parent != nil {
-				hasParent = true
-				break
-			}
-		}
-		if !hasParent {
-			opts = append([]ResourceOpt{{Parent: ctx.stack}}, opts...)
-		}
+	options := &resourceOptions{}
+	for _, o := range opts {
+		o.applyResourceOption(options)
+	}
+	if options.Parent == nil {
+		options.Parent = ctx.stack
 	}
 
 	// Note that we're about to make an outstanding RPC request, so that we can rendezvous during shutdown.
@@ -384,7 +368,7 @@ func (ctx *Context) RegisterResource(
 	}
 
 	// Create resolvers for the resource's outputs.
-	res := makeResourceState(resource, mergeProviders(t, opts...))
+	res := makeResourceState(resource, mergeProviders(t, options.Parent, options.Provider, options.Providers))
 
 	// Kick off the resource registration.  If we are actually performing a deployment, the resulting properties
 	// will be resolved asynchronously as the RPC operation completes.  If we're just planning, values won't resolve.
@@ -400,7 +384,7 @@ func (ctx *Context) RegisterResource(
 		}()
 
 		// Prepare the inputs for an impending operation.
-		inputs, err = ctx.prepareResourceInputs(props, t, res.providers, opts...)
+		inputs, err = ctx.prepareResourceInputs(props, t, res.providers, options)
 		if err != nil {
 			return
 		}
@@ -442,41 +426,23 @@ type resourceState struct {
 }
 
 // checks all possible sources of providers and merges them with preference given to the most specific
-func mergeProviders(t string, opts ...ResourceOpt) map[string]ProviderResource {
-	var parent Resource
-	var provider ProviderResource
-	providers := make(map[string]ProviderResource)
-	for _, opt := range opts {
-		if parent == nil && opt.Parent != nil {
-			parent = opt.Parent
-		}
-		if provider == nil && opt.Provider != nil {
-			provider = opt.Provider
-		}
-		if len(providers) == 0 && opt.Providers != nil {
-			for k, v := range opt.Providers {
-				providers[k] = v
-			}
-		}
-	}
-
-	// copy parent providers, giving precedence to existing providers
+func mergeProviders(t string, parent Resource, provider ProviderResource, providers map[string]ProviderResource) map[string]ProviderResource {
+	// copy parent providers
+	result := make(map[string]ProviderResource)
 	if parent != nil {
-		rs, ok := parent.(*ResourceState)
-		if ok {
-			for k, v := range rs.providers {
-				if _, has := providers[k]; !has {
-					providers[k] = v
-				}
-			}
+		for k, v := range parent.getProviders() {
+			result[k] = v
 		}
-
 	}
 
-	pkg := getPackage(t)
+	// copy provider map
+	for k, v := range providers {
+		result[k] = v
+	}
 
-	// copy specified provider which has highest precedence
+	// copy specific provider, if any
 	if provider != nil {
+		pkg := getPackage(t)
 		providers[pkg] = provider
 	}
 
@@ -620,17 +586,15 @@ type resourceInputs struct {
 
 // prepareResourceInputs prepares the inputs for a resource operation, shared between read and register.
 func (ctx *Context) prepareResourceInputs(props map[string]Input, t string,
-	providers map[string]ProviderResource, opts ...ResourceOpt) (*resourceInputs, error) {
+	providers map[string]ProviderResource, opts *resourceOptions) (*resourceInputs, error) {
 
 	// Get the parent and dependency URNs from the options, in addition to the protection bit.  If there wasn't an
 	// explicit parent, and a root stack resource exists, we will automatically parent to that.
 	parent, optDeps, protect, provider, deleteBeforeReplace,
-		importID, ignoreChanges, err := ctx.getOpts(t, providers, opts...)
+		importID, ignoreChanges, err := ctx.getOpts(t, providers, opts)
 	if err != nil {
 		return nil, errors.Wrap(err, "resolving options")
 	}
-
-	timeouts := ctx.getTimeouts(opts...)
 
 	// Serialize all properties, first by awaiting them, and then marshaling them to the requisite gRPC values.
 	resolvedProps, propertyDeps, rpcDeps, err := marshalInputs(props)
@@ -686,76 +650,42 @@ func (ctx *Context) prepareResourceInputs(props map[string]Input, t string,
 		rpcPropertyDeps:     rpcPropertyDeps,
 		deleteBeforeReplace: deleteBeforeReplace,
 		importID:            string(importID),
-		customTimeouts:      timeouts,
+		customTimeouts:      getTimeouts(opts.CustomTimeouts),
 		ignoreChanges:       ignoreChanges,
 	}, nil
 }
 
-func (ctx *Context) getTimeouts(opts ...ResourceOpt) *pulumirpc.RegisterResourceRequest_CustomTimeouts {
+func getTimeouts(custom *CustomTimeouts) *pulumirpc.RegisterResourceRequest_CustomTimeouts {
 	var timeouts pulumirpc.RegisterResourceRequest_CustomTimeouts
-	for _, opt := range opts {
-		if opt.CustomTimeouts != nil {
-			timeouts.Update = opt.CustomTimeouts.Update
-			timeouts.Create = opt.CustomTimeouts.Create
-			timeouts.Delete = opt.CustomTimeouts.Delete
-		}
+	if custom != nil {
+		timeouts.Update = custom.Update
+		timeouts.Create = custom.Create
+		timeouts.Delete = custom.Delete
 	}
-
 	return &timeouts
 }
 
 // getOpts returns a set of resource options from an array of them. This includes the parent URN, any dependency URNs,
 // a boolean indicating whether the resource is to be protected, and the URN and ID of the resource's provider, if any.
-func (ctx *Context) getOpts(t string, providers map[string]ProviderResource, opts ...ResourceOpt) (
+func (ctx *Context) getOpts(t string, providers map[string]ProviderResource, opts *resourceOptions) (
 	URN, []URN, bool, string, bool, ID, []string, error) {
 
-	var parent Resource
-	var deps []Resource
-	var protect bool
-	var provider ProviderResource
-	var deleteBeforeReplace bool
-	var importIDInput IDInput
-	var ignoreChanges []string
-	for _, opt := range opts {
-		if parent == nil && opt.Parent != nil {
-			parent = opt.Parent
-		}
-		if deps == nil && opt.DependsOn != nil {
-			deps = opt.DependsOn
-		}
-		if !protect && opt.Protect {
-			protect = true
-		}
-		if provider == nil && opt.Provider != nil {
-			provider = opt.Provider
-		}
-		if !deleteBeforeReplace && opt.DeleteBeforeReplace {
-			deleteBeforeReplace = true
-		}
-		if importIDInput == nil && opt.Import != nil {
-			importIDInput = opt.Import
-		}
-		if ignoreChanges == nil && opt.IgnoreChanges != nil {
-			ignoreChanges = opt.IgnoreChanges
-		}
-	}
-
 	var importID ID
-	if importIDInput != nil {
-		if output, ok := importIDInput.(IDOutput); ok {
+	if opts.Import != nil {
+		if output, ok := opts.Import.(IDOutput); ok {
 			id, _, err := output.awaitID(context.TODO())
 			if err != nil {
 				return "", nil, false, "", false, "", nil, err
 			}
 			importID = id
 		} else {
-			importID = importIDInput.(ID)
+			importID = opts.Import.(ID)
 		}
 	}
 
 	var parentURN URN
-	if parent != nil {
-		urn, _, err := parent.URN().awaitURN(context.TODO())
+	if opts.Parent != nil {
+		urn, _, err := opts.Parent.URN().awaitURN(context.TODO())
 		if err != nil {
 			return "", nil, false, "", false, "", nil, err
 		}
@@ -763,9 +693,9 @@ func (ctx *Context) getOpts(t string, providers map[string]ProviderResource, opt
 	}
 
 	var depURNs []URN
-	if deps != nil {
-		depURNs = make([]URN, len(deps))
-		for i, r := range deps {
+	if opts.DependsOn != nil {
+		depURNs = make([]URN, len(opts.DependsOn))
+		for i, r := range opts.DependsOn {
 			urn, _, err := r.URN().awaitURN(context.TODO())
 			if err != nil {
 				return "", nil, false, "", false, "", nil, err
@@ -774,6 +704,7 @@ func (ctx *Context) getOpts(t string, providers map[string]ProviderResource, opt
 		}
 	}
 
+	provider := opts.Provider
 	if provider == nil {
 		pkg := getPackage(t)
 		provider = providers[pkg]
@@ -788,7 +719,7 @@ func (ctx *Context) getOpts(t string, providers map[string]ProviderResource, opt
 		providerRef = pr
 	}
 
-	return parentURN, depURNs, protect, providerRef, deleteBeforeReplace, importID, ignoreChanges, nil
+	return parentURN, depURNs, opts.Protect, providerRef, opts.DeleteBeforeReplace, importID, opts.IgnoreChanges, nil
 }
 
 func (ctx *Context) resolveProviderReference(provider ProviderResource) (string, error) {

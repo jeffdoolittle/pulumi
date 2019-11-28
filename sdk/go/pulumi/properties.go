@@ -1024,6 +1024,22 @@ func awaitInputs(ctx context.Context, input reflect.Value, resolved reflect.Valu
 
 	inputV := input.Interface()
 
+	// If the input is an Output, await it.
+	if out, ok := inputV.(Output); ok {
+		v, known, err := out.await(ctx)
+		if err != nil || !known {
+			return known, err
+		}
+		input, inputV = reflect.ValueOf(v), v
+	}
+
+	// If the dest type is a pointer, allocate storage for the result.
+	if resolved.Kind() == reflect.Ptr {
+		elem := reflect.New(resolved.Type().Elem())
+		resolved.Set(elem)
+		resolved = elem.Elem()
+	}
+
 	// If the input does not implement the Input interface, we will stop here.
 	asInput, ok := inputV.(Input)
 	if !ok {
@@ -1038,19 +1054,10 @@ func awaitInputs(ctx context.Context, input reflect.Value, resolved reflect.Valu
 	switch inputV := inputV.(type) {
 	case *archive, *asset:
 		// These are already fully-resolved.
-		resolved.Set(reflect.ValueOf(inputV))
-		return true, nil
-	case Output:
-		v, known, err := inputV.await(ctx)
-		if err != nil || !known {
-			return known, err
+		input = reflect.ValueOf(inputV)
+		if resolved.Kind() != reflect.Ptr && resolved.Kind() != reflect.Interface {
+			input = input.Elem()
 		}
-		input = reflect.ValueOf(v)
-
-		if !input.Type().AssignableTo(resolved.Type()) {
-			return true, errors.Errorf("cannot resolve a %v to a %v", resolved.Type(), input.Type())
-		}
-
 		resolved.Set(input)
 		return true, nil
 	}

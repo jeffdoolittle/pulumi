@@ -37,10 +37,8 @@ func (s ResourceState) URN() URNOutput {
 	return s.urn
 }
 
-// GetProvider takes a URN and returns the associated provider.
-func (s ResourceState) GetProvider(t string) ProviderResource {
-	pkg := getPackage(t)
-	return s.providers[pkg]
+func (s ResourceState) getProviders() map[string]ProviderResource {
+	return s.providers
 }
 
 func (ResourceState) isResource() {}
@@ -55,10 +53,15 @@ func (s CustomResourceState) ID() IDOutput {
 	return s.id
 }
 
+func (CustomResourceState) isCustomResource() {}
+
 // Resource represents a cloud resource managed by Pulumi.
 type Resource interface {
 	// URN is this resource's stable logical URN used to distinctly address it before, during, and after deployments.
 	URN() URNOutput
+
+	// getProviders returns the provider map for this resource.
+	getProviders() map[string]ProviderResource
 
 	// isResource() is a marker method used to ensure that all Resource types embed a ResourceState.
 	isResource()
@@ -72,6 +75,8 @@ type CustomResource interface {
 	// ID is the provider-assigned unique identifier for this managed resource.  It is set during deployments,
 	// but might be missing ("") during planning phases.
 	ID() IDOutput
+
+	isCustomResource()
 }
 
 // ComponentResource is a resource that aggregates one or more other child resources into a higher level abstraction.
@@ -87,8 +92,13 @@ type ProviderResource interface {
 	CustomResource
 }
 
-// ResourceOpt contains optional settings that control a resource's behavior.
-type ResourceOpt struct {
+type CustomTimeouts struct {
+	Create string
+	Update string
+	Delete string
+}
+
+type resourceOptions struct {
 	// Parent is an optional parent resource to which this resource belongs.
 	Parent Resource
 	// DependsOn is an optional array of explicit dependencies on other resources.
@@ -112,16 +122,120 @@ type ResourceOpt struct {
 	IgnoreChanges []string
 }
 
-// InvokeOpt contains optional settings that control an invoke's behavior.
-type InvokeOpt struct {
+type invokeOptions struct {
 	// Parent is an optional parent resource to use for default provider options for this invoke.
 	Parent Resource
 	// Provider is an optional provider resource to use for this invoke.
 	Provider ProviderResource
 }
 
-type CustomTimeouts struct {
-	Create string
-	Update string
-	Delete string
+type ResourceOption interface {
+	applyResourceOption(*resourceOptions)
+}
+
+type InvokeOption interface {
+	applyInvokeOption(*invokeOptions)
+}
+
+type ResourceOrInvokeOption interface {
+	ResourceOption
+	InvokeOption
+}
+
+type resourceOption func(*resourceOptions)
+
+func (o resourceOption) applyResourceOption(opts *resourceOptions) {
+	o(opts)
+}
+
+type invokeOption func(*invokeOptions)
+
+func (o invokeOption) applyInvokeOption(opts *invokeOptions) {
+	o(opts)
+}
+
+type resourceOrInvokeOption func(ro *resourceOptions, io *invokeOptions)
+
+func (o resourceOrInvokeOption) applyResourceOption(opts *resourceOptions) {
+	o(opts, nil)
+}
+
+func (o resourceOrInvokeOption) applyInvokeOption(opts *invokeOptions) {
+	o(nil, opts)
+}
+
+// Parent sets the parent resource to which this resource or invoke belongs.
+func Parent(r Resource) ResourceOrInvokeOption {
+	return resourceOrInvokeOption(func(ro *resourceOptions, io *invokeOptions) {
+		switch {
+		case ro != nil:
+			ro.Parent = r
+		case io != nil:
+			io.Parent = r
+		}
+	})
+}
+
+// Provider sets the provider resource to use for a resource's CRUD operations or an invoke's call.
+func Provider(r ProviderResource) ResourceOrInvokeOption {
+	return resourceOrInvokeOption(func(ro *resourceOptions, io *invokeOptions) {
+		switch {
+		case ro != nil:
+			ro.Provider = r
+		case io != nil:
+			io.Provider = r
+		}
+	})
+}
+
+// DependsOn is an optional array of explicit dependencies on other resources.
+func DependsOn(o []Resource) ResourceOption {
+	return resourceOption(func(ro *resourceOptions) {
+		ro.DependsOn = o
+	})
+}
+
+// Protect, when set to true, ensures that this resource cannot be deleted (without first setting it to false).
+func Protect(o bool) ResourceOption {
+	return resourceOption(func(ro *resourceOptions) {
+		ro.Protect = o
+	})
+}
+
+// Providers is an optional map of package to provider resource for a component resource.
+func Providers(o map[string]ProviderResource) ResourceOption {
+	return resourceOption(func(ro *resourceOptions) {
+		ro.Providers = o
+	})
+}
+
+// DeleteBeforeReplace, when set to true, ensures that this resource is deleted prior to replacement.
+func DeleteBeforeReplace(o bool) ResourceOption {
+	return resourceOption(func(ro *resourceOptions) {
+		ro.DeleteBeforeReplace = o
+	})
+}
+
+// Import, when provided with a resource ID, indicates that this resource's provider should import its state from
+// the cloud resource with the given ID. The inputs to the resource's constructor must align with the resource's
+// current state. Once a resource has been imported, the import property must be removed from the resource's
+// options.
+func Import(o IDInput) ResourceOption {
+	return resourceOption(func(ro *resourceOptions) {
+		ro.Import = o
+	})
+}
+
+// Timeouts is an optional configuration block used for CRUD operations
+func Timeouts(o *CustomTimeouts) ResourceOption {
+	return resourceOption(func(ro *resourceOptions) {
+		ro.CustomTimeouts = o
+	})
+}
+
+// Ignore changes to any of the specified properties.
+func IgnoreChanges(o []string) ResourceOption {
+	return resourceOption(func(ro *resourceOptions) {
+		ro.IgnoreChanges = o
+	})
 }
